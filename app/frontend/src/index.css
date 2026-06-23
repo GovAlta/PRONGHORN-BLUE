@@ -1,0 +1,155 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Sophisticated blue-gray palette for enterprise SaaS */
+    --background: 220 20% 98%;
+    --foreground: 220 15% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 15% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 15% 12%;
+
+    /* Primary: Deep blue for trust and professionalism */
+    --primary: 215 75% 45%;
+    --primary-foreground: 0 0% 100%;
+    --primary-hover: 215 75% 40%;
+    
+    /* Secondary: Subtle gray-blue */
+    --secondary: 220 15% 94%;
+    --secondary-foreground: 220 15% 20%;
+
+    /* Muted: Light backgrounds */
+    --muted: 220 15% 96%;
+    --muted-foreground: 220 10% 45%;
+
+    /* Accent: Vibrant teal for highlights */
+    --accent: 185 70% 48%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 15% 88%;
+    --input: 220 15% 88%;
+    --ring: 215 75% 45%;
+
+    --radius: 0.5rem;
+    
+    /* Status colors */
+    --success: 145 65% 45%;
+    --warning: 38 92% 50%;
+    --info: 205 90% 50%;
+    
+    /* Design mode status */
+    --status-design: 265 55% 55%;
+    --status-audit: 38 92% 50%;
+    --status-build: 145 65% 45%;
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 220 18% 8%;
+    --foreground: 220 10% 95%;
+
+    --card: 220 16% 10%;
+    --card-foreground: 220 10% 95%;
+
+    --popover: 220 16% 10%;
+    --popover-foreground: 220 10% 95%;
+
+    --primary: 215 75% 55%;
+    --primary-foreground: 0 0% 100%;
+    --primary-hover: 215 75% 50%;
+
+    --secondary: 220 15% 15%;
+    --secondary-foreground: 220 10% 85%;
+
+    --muted: 220 15% 12%;
+    --muted-foreground: 220 10% 55%;
+
+    --accent: 185 70% 48%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 15% 18%;
+    --input: 220 15% 18%;
+    --ring: 215 75% 55%;
+    
+    --success: 145 65% 45%;
+    --warning: 38 92% 50%;
+    --info: 205 90% 50%;
+    
+    --status-design: 265 55% 60%;
+    --status-audit: 38 92% 55%;
+    --status-build: 145 65% 50%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold tracking-tight;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent;
+  }
+  
+  .card-hover {
+    @apply transition-all duration-200 hover:shadow-lg hover:ring-2 hover:ring-primary/70 focus-visible:ring-2 focus-visible:ring-primary;
+  }
+}
+
+/* React Flow custom styles for selected nodes */
+.react-flow__node.selected {
+  outline: 3px solid hsl(var(--primary)) !important;
+  outline-offset: 2px;
+}
+
+.react-flow__node.selected .react-flow__handle {
+  background: hsl(var(--primary));
+}

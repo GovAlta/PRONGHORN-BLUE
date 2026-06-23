@@ -1,0 +1,1583 @@
+# =============================================================================
+# Pronghorn PBMM Landing Zone Deploy Workflow
+# =============================================================================
+# Deploys Pronghorn into a Government of Canada Protected B / Medium-Medium
+# (PBMM) Azure Landing Zone. This is the single deploy workflow; the target
+# environment is driven entirely by the branch that is pushed (dev, uat, prod):
+#   - The params/<branch>.tfvars file and the terraform `environment` value all
+#     derive from github.ref_name; the tfstate backend identifiers come from the
+#     branch's GitHub Environment Variables (TFSTATE_*).
+#   - Runs on a SELF-HOSTED runner inside the PBMM VNet so it can reach private
+#     endpoints (storage, Key Vault, ACR, PostgreSQL) directly. There is NO
+#     open/close public-network workaround and NO SecurityControl=Ignore tag.
+#   - Uses the "corp" archetype (VNet injection + private endpoints).
+#   - Builds container images with `az acr build` on the dedicated ACR agent
+#     pool (private), instead of docker build/push on a public runner.
+#   - Auto-deploys on push to dev/uat/prod, and also supports workflow_dispatch
+#     for manual runs with optional stage overrides.
+#
+# Prerequisites (see docs/PBMM_DEPLOYMENT.md for the full checklist):
+#   - Self-hosted runner provisioned in the PBMM VNet with labels
+#     [self-hosted, linux, pbmm] (see infra/scripts/New-PbmmRunner.ps1).
+#   - A GitHub Environment named after the branch (dev/uat/prod) holding the
+#     environment-specific configuration as Environment Variables (see
+#     docs/PBMM_DEPLOYMENT.md for the full list): SUBSCRIPTION_ID,
+#     AZURE_CLIENT_ID, AZURE_TENANT_ID, the *_SUBNET_ID network identifiers,
+#     CENTRAL_DNS_*, and the *_URL_OVERRIDE public hostnames. These are read via
+#     vars.* and exported to Terraform as TF_VAR_* — they are NOT committed to
+#     the tfvars files.
+#       * Azure login (client/tenant/subscription) sourced from the same
+#         environment variables (SUBSCRIPTION_ID/AZURE_CLIENT_ID/AZURE_TENANT_ID).
+#       * tfstate backend (TFSTATE_RESOURCE_GROUP/STORAGE_ACCOUNT/CONTAINER/KEY)
+#         sourced from the same GitHub Environment Variables.
+#       * Generated secrets (postgres/jwt) seeded into Key Vault by Terraform;
+#         GitHub App identity set in Key Vault out-of-band.
+#   - OIDC federated credential scoped to environment:<branch> (e.g.
+#     repo:<org>/pronghorn:environment:dev) on the deploying app registration —
+#     required because the deploy job now runs with `environment: <branch>`.
+#   - infra/params/<branch>.tfvars completed (all REPLACE: placeholders filled)
+#     and the GitHub Environment Variables populated (incl. TFSTATE_*)
+# =============================================================================
+
+name: platform-deploy
+
+on:
+  push:
+    branches: [dev, uat, prod]
+    paths-ignore:
+      # Markdown anywhere in the repo (docs, specs, module READMEs, etc.)
+      - "**/*.md"
+      - "docs/**"
+      - ".github/skills/**"
+      - ".github/instructions/**"
+      - ".github/prompts/**"
+      - ".github/agents/**"
+      - ".vscode/**"
+      # genapp-deploy.yml is workflow_dispatch-only; editing it should not deploy.
+      - ".github/workflows/genapp-deploy.yml"
+      # Genapp terraform modules are only used by the genapp workflow, not platform deploy.
+      - "infra/generated-app-template/**"
+      - "infra/modules/generated-app/**"
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: Run terraform plan only (no apply/push/update)
+        required: true
+        default: false
+        type: boolean
+      skip_infra:
+        description: Skip core infrastructure stage
+        required: true
+        default: false
+        type: boolean
+      skip_build:
+        description: Skip container image build and push stage
+        required: true
+        default: false
+        type: boolean
+      skip_container_apps:
+        description: Skip container apps deploy stage
+        required: true
+        default: false
+        type: boolean
+      deploy_ai_models:
+        description: Deploy AI model deployments after infrastructure/app deployment
+        required: true
+        default: false
+        type: boolean
+      destroy:
+        description: "DESTRUCTIVE: Destroy all infrastructure before apply (use for AVM migration or full reset)"
+        required: true
+        default: false
+        type: boolean
+      debug_logging:
+        description: Enable debug logging (GitHub Actions + Terraform)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+  security-events: write
+
+concurrency:
+  group: deploy-${{ github.ref_name }}-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy-infra-and-apps
+    # Self-hosted runner inside the PBMM VNet — required to reach private
+    # endpoints (no public network access on storage/Key Vault/ACR/PostgreSQL).
+    runs-on: [self-hosted, linux, pbmm]
+    timeout-minutes: 180
+    # GitHub Environment (named after the branch) supplies the env-specific
+    # configuration as Environment Variables. Requires an OIDC federated
+    # credential with subject repo:<org>/pronghorn:environment:<branch>.
+    environment: ${{ github.ref_name }}
+    env:
+      PLAN_ONLY: ${{ (github.event_name == 'workflow_dispatch' && inputs.plan) && 'true' || 'false' }}
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_LOCK_TIMEOUT: "10m"
+      TERRAFORM_APPLY_TIMEOUT: "75m"
+      AUTO_SKIP_DOWNSTREAM_DEPLOYMENT: "false"
+      IMAGE_TAG: ${{ github.sha }}
+      ACTIONS_STEP_DEBUG: ${{ (github.event_name == 'workflow_dispatch' &&
+        inputs.debug_logging) && 'true' || 'false' }}
+      ACTIONS_RUNNER_DEBUG: ${{ (github.event_name == 'workflow_dispatch' &&
+        inputs.debug_logging) && 'true' || 'false' }}
+      TF_LOG:
+        ${{ (github.event_name == 'workflow_dispatch' && inputs.debug_logging)
+        && 'DEBUG' || 'OFF' }}
+      AZURE_CORE_LOG_LEVEL: ${{ (github.event_name == 'workflow_dispatch' &&
+        inputs.debug_logging) && 'debug' || 'warning' }}
+      ENVIRONMENT: ${{ github.ref_name }}
+      TFVARS_FILE: params/${{ github.ref_name }}.tfvars
+      # Azure login (AZURE_*/ARM_*) and the tfstate backend (TFSTATE_*) are both
+      # sourced from the branch's GitHub Environment Variables by
+      # parse-deployment-config and exported to $GITHUB_ENV.
+      ARM_USE_OIDC: "true"
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: parse-deployment-config
+        shell: bash
+        env:
+          # Azure login identity AND the tfstate backend now come entirely from
+          # the branch's GitHub Environment Variables; nothing is parsed from
+          # committed files here.
+          VAR_SUBSCRIPTION_ID: ${{ vars.SUBSCRIPTION_ID }}
+          VAR_AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          VAR_AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          VAR_TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          VAR_TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          VAR_TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+          VAR_TFSTATE_KEY: ${{ vars.TFSTATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          TFVARS_PATH="infra/${TFVARS_FILE}"
+          if [ ! -f "${TFVARS_PATH}" ]; then
+            echo "Missing required tfvars file: ${TFVARS_PATH}" >&2
+            exit 1
+          fi
+
+          # Azure login identity — sourced from the GitHub Environment Variables.
+          SUB="${VAR_SUBSCRIPTION_ID}"
+          CLIENT="${VAR_AZURE_CLIENT_ID}"
+          TENANT="${VAR_AZURE_TENANT_ID}"
+
+          # tfstate backend — sourced from the GitHub Environment Variables.
+          RG="${VAR_TFSTATE_RESOURCE_GROUP}"
+          SA="${VAR_TFSTATE_STORAGE_ACCOUNT}"
+          CONTAINER="${VAR_TFSTATE_CONTAINER}"
+          KEY="${VAR_TFSTATE_KEY}"
+
+          missing=()
+          [ -n "$SUB" ] || missing+=("SUBSCRIPTION_ID (GitHub environment variable)")
+          [ -n "$CLIENT" ] || missing+=("AZURE_CLIENT_ID (GitHub environment variable)")
+          [ -n "$TENANT" ] || missing+=("AZURE_TENANT_ID (GitHub environment variable)")
+          [ -n "$RG" ] || missing+=("TFSTATE_RESOURCE_GROUP (GitHub environment variable)")
+          [ -n "$SA" ] || missing+=("TFSTATE_STORAGE_ACCOUNT (GitHub environment variable)")
+          [ -n "$CONTAINER" ] || missing+=("TFSTATE_CONTAINER (GitHub environment variable)")
+          [ -n "$KEY" ] || missing+=("TFSTATE_KEY (GitHub environment variable)")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "Missing required deployment config values: ${missing[*]}" >&2
+            exit 1
+          fi
+
+          {
+            echo "AZURE_CLIENT_ID=${CLIENT}"
+            echo "AZURE_TENANT_ID=${TENANT}"
+            echo "AZURE_SUBSCRIPTION_ID=${SUB}"
+            echo "ARM_CLIENT_ID=${CLIENT}"
+            echo "ARM_TENANT_ID=${TENANT}"
+            echo "ARM_SUBSCRIPTION_ID=${SUB}"
+            echo "TFSTATE_RESOURCE_GROUP=${RG}"
+            echo "TFSTATE_STORAGE_ACCOUNT=${SA}"
+            echo "TFSTATE_CONTAINER=${CONTAINER}"
+            echo "TFSTATE_KEY=${KEY}"
+          } >> "$GITHUB_ENV"
+          echo "Parsed deployment config from GitHub environment '${ENVIRONMENT}' variables."
+
+      # Export the environment-specific Terraform inputs (sourced from the GitHub
+      # Environment Variables) as TF_VAR_* so every subsequent terraform step
+      # inherits them. Empty values are skipped so the Terraform variable falls
+      # back to its declared default (null/"") — preserving prior behavior for
+      # intentionally-unset optionals.
+      - name: export-terraform-environment-config
+        shell: bash
+        env:
+          TF_VAR_subscription_id: ${{ vars.SUBSCRIPTION_ID }}
+          TF_VAR_azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
+          TF_VAR_azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+          TF_VAR_delegated_subnet_id: ${{ vars.DELEGATED_SUBNET_ID }}
+          TF_VAR_keyvault_private_endpoint_subnet_id: ${{ vars.KEYVAULT_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_storage_private_endpoint_subnet_id: ${{ vars.STORAGE_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_container_apps_subnet_id: ${{ vars.CONTAINER_APPS_SUBNET_ID }}
+          TF_VAR_aca_environment_private_endpoint_subnet_id: ${{ vars.ACA_ENVIRONMENT_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_workload_aca_subnet_id: ${{ vars.WORKLOAD_ACA_SUBNET_ID }}
+          TF_VAR_workload_aca_private_endpoint_subnet_id: ${{ vars.WORKLOAD_ACA_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_apim_subnet_id: ${{ vars.APIM_SUBNET_ID }}
+          TF_VAR_acr_private_endpoint_subnet_id: ${{ vars.ACR_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_ai_foundry_private_endpoint_subnet_id: ${{ vars.AI_FOUNDRY_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_central_dns_subscription_id: ${{ vars.CENTRAL_DNS_SUBSCRIPTION_ID }}
+          TF_VAR_central_dns_resource_group_name: ${{ vars.CENTRAL_DNS_RESOURCE_GROUP_NAME }}
+          TF_VAR_frontend_app_url_override: ${{ vars.FRONTEND_APP_URL_OVERRIDE }}
+          TF_VAR_api_base_url_override: ${{ vars.API_BASE_URL_OVERRIDE }}
+        run: |
+          set -euo pipefail
+          exported=0
+          for name in \
+            TF_VAR_subscription_id \
+            TF_VAR_azure_client_id \
+            TF_VAR_azure_tenant_id \
+            TF_VAR_delegated_subnet_id \
+            TF_VAR_keyvault_private_endpoint_subnet_id \
+            TF_VAR_storage_private_endpoint_subnet_id \
+            TF_VAR_container_apps_subnet_id \
+            TF_VAR_aca_environment_private_endpoint_subnet_id \
+            TF_VAR_workload_aca_subnet_id \
+            TF_VAR_workload_aca_private_endpoint_subnet_id \
+            TF_VAR_apim_subnet_id \
+            TF_VAR_acr_private_endpoint_subnet_id \
+            TF_VAR_ai_foundry_private_endpoint_subnet_id \
+            TF_VAR_central_dns_subscription_id \
+            TF_VAR_central_dns_resource_group_name \
+            TF_VAR_frontend_app_url_override \
+            TF_VAR_api_base_url_override; do
+            val="${!name:-}"
+            if [ -n "$val" ]; then
+              echo "${name}=${val}" >> "$GITHUB_ENV"
+              exported=$((exported + 1))
+            fi
+          done
+          echo "Exported ${exported} TF_VAR_* value(s) from GitHub environment '${ENVIRONMENT}'."
+
+      - name: azure-login-oidc
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: register-microsoft-app-resource-provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_provider_state() {
+            local stderr_file
+            stderr_file="$(mktemp)"
+            chmod 600 "${stderr_file}"
+
+            if PROVIDER_STATE="$(az provider show --namespace Microsoft.App --query registrationState -o tsv 2>"${stderr_file}")"; then
+              PROVIDER_STATE_ERROR=""
+              rm -f "${stderr_file}"
+              return 0
+            fi
+
+            PROVIDER_STATE_ERROR="$(cat "${stderr_file}")"
+            PROVIDER_STATE=""
+            rm -f "${stderr_file}"
+            return 1
+          }
+
+          PROVIDER_STATE=""
+          PROVIDER_STATE_ERROR=""
+          read_provider_state || true
+          CURRENT_STATE="${PROVIDER_STATE}"
+          if [ "${CURRENT_STATE}" = "Registered" ]; then
+            echo "Microsoft.App is already registered."
+            exit 0
+          fi
+
+          if [ -n "${PROVIDER_STATE_ERROR}" ]; then
+            echo "Unable to read current Microsoft.App registration state: ${PROVIDER_STATE_ERROR}"
+          fi
+
+          echo "Registering Microsoft.App resource provider (current state: ${CURRENT_STATE:-unknown})..."
+          az provider register --namespace Microsoft.App --wait
+          PROVIDER_STATE=""
+          PROVIDER_STATE_ERROR=""
+          read_provider_state || true
+          FINAL_STATE="${PROVIDER_STATE}"
+          if [ -n "${PROVIDER_STATE_ERROR}" ]; then
+            echo "Microsoft.App registration completed, but verifying the final state failed: ${PROVIDER_STATE_ERROR}" >&2
+            exit 1
+          fi
+          if [ "${FINAL_STATE}" != "Registered" ]; then
+            echo "Microsoft.App registration did not complete successfully (final state: ${FINAL_STATE})." >&2
+            exit 1
+          fi
+          echo "Microsoft.App resource provider registered."
+
+      - name: setup-terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: setup-nodejs
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: validate-prerequisite-files
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRIMARY_TFVARS_PATH="infra/${TFVARS_FILE}"
+          if [ ! -f "${PRIMARY_TFVARS_PATH}" ]; then
+            echo "Missing tfvars file: ${PRIMARY_TFVARS_PATH}" >&2
+            exit 1
+          fi
+          echo "Using tfvars file: ${PRIMARY_TFVARS_PATH}"
+
+      # NOTE: PBMM has NO open/close public-network steps. The self-hosted runner
+      # runs inside the VNet and reaches the tfstate storage account, app
+      # storage, and Key Vault through their private endpoints.
+
+      - name: start-postgresql-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          DB_SERVER="$(sed -n 's/^[[:space:]]*postgresql_server_name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "infra/${TFVARS_FILE}" | tail -n 1)"
+          APP_RG="$(sed -n 's/^[[:space:]]*resource_group_name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "infra/${TFVARS_FILE}" | tail -n 1)"
+          if [ -z "$DB_SERVER" ] || [ -z "$APP_RG" ]; then
+            echo "Could not parse postgresql_server_name or resource_group_name from infra/${TFVARS_FILE}" >&2
+            exit 1
+          fi
+          echo "APP_RESOURCE_GROUP=${APP_RG}" >> "$GITHUB_ENV"
+          echo "POSTGRESQL_SERVER_NAME=${DB_SERVER}" >> "$GITHUB_ENV"
+
+          DB_STATE="$(az postgres flexible-server show --name "$DB_SERVER" --resource-group "$APP_RG" --query state -o tsv 2>/dev/null || true)"
+          if [ "$DB_STATE" = "Stopped" ]; then
+            echo "PostgreSQL server '${DB_SERVER}' is stopped. Starting..."
+            az postgres flexible-server start --name "$DB_SERVER" --resource-group "$APP_RG"
+            echo "[OK] PostgreSQL server '${DB_SERVER}' started"
+          else
+            echo "PostgreSQL server '${DB_SERVER}' is in state '${DB_STATE}' — no action needed"
+          fi
+
+      - name: bootstrap-terraform-shared-state
+        id: bootstrap_tfstate
+        shell: pwsh
+        run: |
+          ./infra/scripts/bootstrap-tfstate.ps1 `
+            -SubscriptionId "${{ env.AZURE_SUBSCRIPTION_ID }}" `
+            -ResourceGroupName "${{ env.TFSTATE_RESOURCE_GROUP }}" `
+            -StorageAccountName "${{ env.TFSTATE_STORAGE_ACCOUNT }}" `
+            -ContainerName "${{ env.TFSTATE_CONTAINER }}" `
+            -StateKey "${{ env.TFSTATE_KEY }}" `
+            -TfvarsPath "infra/${{ env.TFVARS_FILE }}" `
+            -PrivateEndpointSubnetId "${{ vars.STORAGE_PRIVATE_ENDPOINT_SUBNET_ID }}" `
+            -WaitTimeoutSeconds 300 `
+            -PollIntervalSeconds 10 `
+            -SkipSecurityControlTag
+
+      - name: build-terraform-var-overrides
+        id: tfvars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TF_SECRET_ARGS="-var=subscription_id=${ARM_SUBSCRIPTION_ID}"
+          TF_SECRET_ARGS="$TF_SECRET_ARGS -var=archetype=corp"
+
+          TFVARS_PATH="infra/${TFVARS_FILE}"
+          if [ -f "${TFVARS_PATH}" ] && grep -Eq '^[[:space:]]*enable_application_gateway[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "${TFVARS_PATH}"; then
+            FRONTEND_CERT_SECRET_ID="$(sed -n 's/^[[:space:]]*application_gateway_frontend_certificate_key_vault_secret_id[[:space:]]*=[[:space:]]*"\([^"]*\)"[[:space:]]*$/\1/p' "${TFVARS_PATH}" | tail -n 1)"
+            API_CERT_SECRET_ID="$(sed -n 's/^[[:space:]]*application_gateway_api_certificate_key_vault_secret_id[[:space:]]*=[[:space:]]*"\([^"]*\)"[[:space:]]*$/\1/p' "${TFVARS_PATH}" | tail -n 1)"
+
+            if [ -z "${FRONTEND_CERT_SECRET_ID}" ] || [ -z "${API_CERT_SECRET_ID}" ] || \
+               [[ "${FRONTEND_CERT_SECRET_ID}" == *"/REPLACE/"* ]] || \
+               [[ "${API_CERT_SECRET_ID}" == *"/REPLACE/"* ]]; then
+              echo "Application Gateway deployment is being skipped because certificate prerequisites are incomplete." >&2
+              TF_SECRET_ARGS="$TF_SECRET_ARGS -var=enable_application_gateway=false"
+            fi
+          fi
+
+          # Postgres admin passwords and jwt-secret are NO LONGER injected here.
+          # They are generated once and seeded into Key Vault by Terraform
+          # (see infra/secrets.tf), read via ephemeral key vault secrets, and
+          # consumed by write-only arguments — never passed as -var or stored in
+          # state. The GitHub App private key is likewise set in Key Vault
+          # out-of-band, not passed through Terraform.
+          echo "tf_secret_args=$TF_SECRET_ARGS" >> "$GITHUB_OUTPUT"
+
+      - name: terraform-init
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -reconfigure -lock-timeout="${TF_LOCK_TIMEOUT}" \
+            -backend-config="resource_group_name=${TFSTATE_RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${TFSTATE_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${TFSTATE_CONTAINER}" \
+            -backend-config="key=${TFSTATE_KEY}" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: terraform-validate
+        working-directory: infra
+        run: terraform validate
+
+      - name: deploy-core-infrastructure-plan
+        if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_infra) && env.PLAN_ONLY == 'true' }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -lock-timeout="${TF_LOCK_TIMEOUT}" \
+            -refresh=false \
+            -var-file="${TFVARS_FILE}" \
+            ${{ steps.tfvars.outputs.tf_secret_args }}
+
+      - name: destroy-core-infrastructure
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.destroy && !inputs.skip_infra && env.PLAN_ONLY != 'true' }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::warning::DESTROYING all Terraform-managed infrastructure"
+          terraform destroy \
+            -auto-approve \
+            -lock-timeout="${TF_LOCK_TIMEOUT}" \
+            -var-file="${TFVARS_FILE}" \
+            ${{ steps.tfvars.outputs.tf_secret_args }}
+          echo "[OK] Infrastructure destroyed. Apply will recreate from scratch."
+
+      - name: refresh-azure-login-before-apply
+        if:
+          ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_infra &&
+          env.PLAN_ONLY != 'true') }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      # Pre-warm an ARM + Key Vault data-plane token while the short-lived GitHub
+      # OIDC assertion (~5 min) is still valid. Federated-credential logins do not
+      # cache a refresh token, so every new token audience re-presents the OIDC
+      # assertion. The core apply spends 10+ min in private-endpoint DNS waits
+      # before terraform_data.seed_generated_secrets runs `az keyvault secret set`
+      # (vault.azure.net audience) — by then the assertion is long expired
+      # (AADSTS700024). Caching the vault token up front (valid ~60-90 min) lets
+      # the mid-apply secret seed reuse it instead of the dead assertion.
+      - name: prewarm-keyvault-token
+        if:
+          ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_infra &&
+          env.PLAN_ONLY != 'true') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account get-access-token --resource https://management.azure.com/ --output none
+          az account get-access-token --resource https://vault.azure.net --output none
+          echo "[OK] Pre-warmed ARM and Key Vault data-plane tokens."
+
+      # Phase 1 — seed generated secrets BEFORE the full apply.
+      #
+      # The full apply below reads the generated secrets through
+      # `ephemeral "azurerm_key_vault_secret"` blocks. Ephemeral resources are
+      # evaluated during the PLAN phase of `terraform apply`, but the secret is
+      # written by `terraform_data.seed_generated_secrets`'s local-exec, which
+      # only runs during the APPLY phase. On a vault that does not yet contain the
+      # secret, the plan-phase ephemeral read 404s (SecretNotFound) and aborts the
+      # apply before the seed ever runs — `depends_on` cannot defer an ephemeral
+      # read past an apply-walk provisioner.
+      #
+      # This targeted apply runs the seed (and everything it depends on: the Key
+      # Vault module incl. private-endpoint DNS waits) on its own. It creates the
+      # secrets idempotently (Set-GeneratedSecret.ps1 preserves existing values),
+      # so the subsequent full apply's plan-phase ephemeral reads succeed.
+      - name: seed-generated-secrets
+        if:
+          ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_infra &&
+          env.PLAN_ONLY != 'true') }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Seeding generated Key Vault secrets (targeted apply) before the full apply."
+          terraform apply -auto-approve \
+            -lock-timeout="${TF_LOCK_TIMEOUT}" \
+            -refresh=false \
+            -target=terraform_data.seed_generated_secrets \
+            -var-file="${TFVARS_FILE}" \
+            ${{ steps.tfvars.outputs.tf_secret_args }}
+          echo "[OK] Generated secrets seeded; proceeding to full core apply."
+
+      - name: deploy-core-infrastructure-apply
+        if:
+          ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_infra &&
+          env.PLAN_ONLY != 'true') }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAX_ATTEMPTS=3
+          PRIVATE_ENDPOINT_DELETE_TIMEOUT_SECONDS=600
+          RETRY_DELAY_SECONDS=60
+          APPLY_LOG_PATH="$(mktemp /tmp/terraform-core-apply.XXXXXX.log)"
+          IMPORT_LOG_PATH="$(mktemp /tmp/terraform-core-import.XXXXXX.log)"
+          trap 'rm -f "${APPLY_LOG_PATH}" "${IMPORT_LOG_PATH}"' EXIT
+
+          import_existing_resource() {
+            local state_address="$1"
+            local marker="$2"
+            local id_pattern="$3"
+            local description="$4"
+            local fallback_resource_group_label="${5:-}"
+            local fallback_resource_name_label="${6:-}"
+            local fallback_provider_path="${7:-}"
+            local error_context
+            local resource_id
+            local fallback_resource_group
+            local fallback_resource_name
+
+            if ! grep -Fq "$marker" "${APPLY_LOG_PATH}"; then
+              return 1
+            fi
+
+            error_context="$(grep -B6 -A8 -F "$marker" "${APPLY_LOG_PATH}" || true)"
+            resource_id="$(printf '%s\n' "${error_context}" | grep -Eo "$id_pattern" | tail -n 1 || true)"
+
+            if [ -z "${resource_id}" ] && [ -n "${fallback_provider_path}" ] && [ -n "${ARM_SUBSCRIPTION_ID:-}" ]; then
+              extract_quoted_error_value() {
+                local label="$1"
+                printf '%s\n' "${error_context}" | awk -F'"' -v label="${label}" 'index($0, label ": ") {print $2}' | tail -n 1
+              }
+
+              fallback_resource_group="$(extract_quoted_error_value "${fallback_resource_group_label}")"
+              fallback_resource_name="$(extract_quoted_error_value "${fallback_resource_name_label}")"
+
+              if [ -n "${fallback_resource_group}" ] && ! [[ "${fallback_resource_group}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+                echo "Derived ${description} resource group contains unsupported characters: ${fallback_resource_group}" >&2
+                exit "$APPLY_EXIT_CODE"
+              fi
+
+              if [ -n "${fallback_resource_name}" ] && ! [[ "${fallback_resource_name}" =~ ^[A-Za-z0-9-]+$ ]]; then
+                echo "Derived ${description} resource name contains unsupported characters: ${fallback_resource_name}" >&2
+                exit "$APPLY_EXIT_CODE"
+              fi
+
+              if [ -n "${fallback_resource_group}" ] && [ -n "${fallback_resource_name}" ]; then
+                resource_id="/subscriptions/${ARM_SUBSCRIPTION_ID}/resourceGroups/${fallback_resource_group}/providers/${fallback_provider_path}/${fallback_resource_name}"
+              fi
+            fi
+
+            if [ -z "${resource_id}" ]; then
+              echo "Unable to determine the existing ${description} resource ID from the Terraform error output." >&2
+              exit "$APPLY_EXIT_CODE"
+            fi
+
+            if terraform state show "$state_address" >/dev/null 2>&1; then
+              echo "${description} is already present in Terraform state; import recovery cannot resolve this apply failure." >&2
+              exit "$APPLY_EXIT_CODE"
+            fi
+
+            echo "Importing existing ${description} into the active Terraform state: ${resource_id}"
+
+            set +e
+            terraform import \
+              -lock-timeout="${TF_LOCK_TIMEOUT}" \
+              -var-file="${TFVARS_FILE}" \
+              ${{ steps.tfvars.outputs.tf_secret_args }} \
+              "$state_address" \
+              "${resource_id}" >"${IMPORT_LOG_PATH}" 2>&1
+            IMPORT_EXIT_CODE=$?
+            set -e
+
+            cat "${IMPORT_LOG_PATH}"
+
+            if [ "$IMPORT_EXIT_CODE" -ne 0 ]; then
+              exit "$IMPORT_EXIT_CODE"
+            fi
+
+            IS_TRANSIENT_RETRYABLE_ERROR=true
+            RETRY_REASON="imported existing ${description} into Terraform state"
+            return 0
+          }
+
+          import_role_assignment() {
+            local state_address="$1"
+            local marker="$2"
+            local description="$3"
+
+            if ! grep -Fq "$marker" "${APPLY_LOG_PATH}"; then
+              return 1
+            fi
+
+            local error_context
+            error_context="$(grep -B2 -A8 -F "$marker" "${APPLY_LOG_PATH}" || true)"
+
+            if ! grep -q "RoleAssignmentExists" <<<"${error_context}"; then
+              return 1
+            fi
+
+            local role_assignment_guid
+            role_assignment_guid="$(printf '%s\n' "${error_context}" | grep -oE 'existing role assignment is [0-9a-fA-F]{32}' | grep -oE '[0-9a-fA-F]{32}' | head -n 1 || true)"
+
+            if [ -z "${role_assignment_guid}" ]; then
+              echo "Unable to extract role assignment GUID from error output for ${description}." >&2
+              return 1
+            fi
+
+            # Format the 32-char hex GUID as a proper UUID (8-4-4-4-12)
+            # Azure error gives e.g. f5b056b8fcf9443f9fb104e7d79ac58e
+            # Azure resource IDs use   f5b056b8-fcf9-443f-9fb1-04e7d79ac58e
+            local formatted_guid="${role_assignment_guid:0:8}-${role_assignment_guid:8:4}-${role_assignment_guid:12:4}-${role_assignment_guid:16:4}-${role_assignment_guid:20:12}"
+
+            local full_id=""
+            local scope=""
+
+            # Primary: extract scope from the Terraform plan output using awk
+            # awk index() does literal string matching — safe for dots, brackets in state_address
+            scope="$(awk -v target="# ${state_address} will be" '
+              index($0, target) { found = 1; next }
+              found && /^[[:space:]]*\}/ { exit }
+              found && /\+ scope[[:space:]]/ {
+                sub(/.*= "/, "")
+                sub(/".*/, "")
+                print
+                exit
+              }
+            ' "${APPLY_LOG_PATH}" 2>/dev/null || true)"
+
+            if [ -n "${scope}" ] && [[ "${scope}" =~ ^/subscriptions/ ]]; then
+              full_id="${scope}/providers/Microsoft.Authorization/roleAssignments/${formatted_guid}"
+            fi
+
+            # Fallback: query Azure CLI with properly formatted UUID
+            if [ -z "${full_id}" ]; then
+              full_id="$(az role assignment list --all --query "[?name=='${formatted_guid}'].id | [0]" -o tsv 2>/dev/null || true)"
+            fi
+
+            if [ -z "${full_id}" ]; then
+              echo "Unable to determine full resource ID for existing ${description} (raw=${role_assignment_guid}, uuid=${formatted_guid}, scope=${scope:-empty})." >&2
+              exit "$APPLY_EXIT_CODE"
+            fi
+
+            if terraform state show "$state_address" >/dev/null 2>&1; then
+              echo "${description} is already present in Terraform state; import recovery cannot resolve this apply failure." >&2
+              exit "$APPLY_EXIT_CODE"
+            fi
+
+            echo "Importing existing ${description} into the active Terraform state: ${full_id}"
+
+            set +e
+            terraform import \
+              -lock-timeout="${TF_LOCK_TIMEOUT}" \
+              -var-file="${TFVARS_FILE}" \
+              ${{ steps.tfvars.outputs.tf_secret_args }} \
+              "$state_address" \
+              "${full_id}" >"${IMPORT_LOG_PATH}" 2>&1
+            IMPORT_EXIT_CODE=$?
+            set -e
+
+            cat "${IMPORT_LOG_PATH}"
+
+            if [ "$IMPORT_EXIT_CODE" -ne 0 ]; then
+              exit "$IMPORT_EXIT_CODE"
+            fi
+
+            IS_TRANSIENT_RETRYABLE_ERROR=true
+            RETRY_REASON="imported existing ${description} into Terraform state"
+            return 0
+          }
+
+          emit_private_endpoint_manual_workaround() {
+            local state_address="$1"
+            local private_endpoint_id="$2"
+            local failure_output="$3"
+
+            echo "Private endpoint remediation requires manual follow-up for ${state_address}." >&2
+            if [ -n "${private_endpoint_id}" ]; then
+              echo "Azure private endpoint: ${private_endpoint_id}" >&2
+              echo "2. Inspect the private endpoint provisioning state:" >&2
+              echo "   az network private-endpoint show --ids \"${private_endpoint_id}\" --query '{id:id,name:name,provisioningState:provisioningState}' -o json" >&2
+              echo "3. If the private endpoint is stuck in Failed, delete it manually and wait for Azure to finish:" >&2
+              echo "   az network private-endpoint delete --ids \"${private_endpoint_id}\"" >&2
+              echo "   az network private-endpoint wait --deleted --ids \"${private_endpoint_id}\" --interval 10 --timeout ${PRIVATE_ENDPOINT_DELETE_TIMEOUT_SECONDS}" >&2
+            fi
+            echo "Reason: ${failure_output}" >&2
+            echo "Manual workaround:" >&2
+            echo "1. Re-authenticate Azure CLI with a fresh token on a workstation or rerun the workflow from the start." >&2
+            echo "4. Remove stale Terraform state entries that still reference deleted endpoints:" >&2
+            echo "   terraform state rm \"${state_address}\"" >&2
+            echo "5. Re-run the infrastructure deployment after the Azure resource and state are aligned." >&2
+          }
+
+          reconcile_private_endpoint_state() {
+            local reconciled=false
+            local inspect_output
+            local inspect_exit_code
+            local provisioning_state
+            local private_endpoint_id
+            local state_snapshot
+            local state_address
+            local wait_output
+            local wait_exit_code
+            local manual_intervention_required=false
+
+            mapfile -t private_endpoint_state_addresses < <(terraform state list | grep 'azurerm_private_endpoint' || true)
+
+            if [ "${#private_endpoint_state_addresses[@]}" -eq 0 ]; then
+              return 1
+            fi
+
+            for state_address in "${private_endpoint_state_addresses[@]}"; do
+              if ! state_snapshot="$(terraform state show -no-color "${state_address}" 2>/dev/null)"; then
+                continue
+              fi
+
+              private_endpoint_id="$(printf '%s\n' "${state_snapshot}" | sed -n 's/^[[:space:]]*id[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' | head -n 1)"
+
+              if [ -z "${private_endpoint_id}" ]; then
+                continue
+              fi
+
+              set +e
+              inspect_output="$(az network private-endpoint show \
+                --ids "${private_endpoint_id}" \
+                --query '{id:id,name:name,provisioningState:provisioningState}' \
+                -o json 2>&1)"
+              inspect_exit_code=$?
+              set -e
+
+              if [ "${inspect_exit_code}" -ne 0 ]; then
+                if grep -q "ResourceNotFound" <<<"${inspect_output}"; then
+                  echo "Removing stale Terraform state for missing private endpoint ${state_address}: ${private_endpoint_id}"
+                  terraform state rm "${state_address}"
+                  reconciled=true
+                  continue
+                fi
+
+                emit_private_endpoint_manual_workaround "${state_address}" "${private_endpoint_id}" "${inspect_output}"
+                manual_intervention_required=true
+                continue
+              fi
+
+              provisioning_state="$(jq -r '.provisioningState // ""' <<<"${inspect_output}")"
+
+              if [ "${provisioning_state}" != "Failed" ]; then
+                continue
+              fi
+
+              echo "Deleting failed private endpoint ${state_address}: ${private_endpoint_id}"
+
+              set +e
+              wait_output="$(az network private-endpoint delete --ids "${private_endpoint_id}" 2>&1)"
+              wait_exit_code=$?
+              set -e
+
+              if [ "${wait_exit_code}" -ne 0 ] && ! grep -q "ResourceNotFound" <<<"${wait_output}"; then
+                emit_private_endpoint_manual_workaround "${state_address}" "${private_endpoint_id}" "${wait_output}"
+                manual_intervention_required=true
+                continue
+              fi
+
+              set +e
+              wait_output="$(az network private-endpoint wait --deleted --ids "${private_endpoint_id}" --interval 10 --timeout "${PRIVATE_ENDPOINT_DELETE_TIMEOUT_SECONDS}" 2>&1)"
+              wait_exit_code=$?
+              set -e
+
+              if [ "${wait_exit_code}" -ne 0 ] && ! grep -q "ResourceNotFound" <<<"${wait_output}"; then
+                emit_private_endpoint_manual_workaround "${state_address}" "${private_endpoint_id}" "${wait_output}"
+                manual_intervention_required=true
+                continue
+              fi
+
+              terraform state rm "${state_address}"
+              reconciled=true
+            done
+
+            if [ "${reconciled}" = true ]; then
+              IS_TRANSIENT_RETRYABLE_ERROR=true
+              RETRY_REASON="reconciled stale or failed private endpoint state"
+              return 0
+            fi
+
+            if [ "${manual_intervention_required}" = true ]; then
+              IS_TRANSIENT_RETRYABLE_ERROR=false
+              RETRY_REASON="private endpoint remediation requires manual intervention"
+              return 2
+            fi
+
+            return 1
+          }
+
+          EXTRA_APPLY_ARGS=""
+          PRIVATE_ENDPOINT_ERROR_PATTERN='(Error: (retrieving existing|deleting) Private Endpoint|Private Endpoint Name: .*\): (unexpected status 404 .*ResourceNotFound|polling after Delete: context deadline exceeded))'
+          LEGACY_APIM_ERROR_IDENTIFIER_PATTERN='(PrivateEndpointNotSupportedInServiceSku|CustomPropertiesNotSupportedInSku)'
+          LEGACY_APIM_ERROR_MESSAGE_PATTERN='customProperties are not supported in SkuType Consumption'
+
+          for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
+            echo "Running core infrastructure apply (attempt ${ATTEMPT}/${MAX_ATTEMPTS})"
+
+             set +e
+             timeout --signal=TERM --kill-after=5m "${TERRAFORM_APPLY_TIMEOUT}" \
+               terraform apply -auto-approve \
+                 -lock-timeout="${TF_LOCK_TIMEOUT}" \
+                 -refresh=false \
+                 -var-file="${TFVARS_FILE}" \
+                 ${{ steps.tfvars.outputs.tf_secret_args }} \
+                 ${EXTRA_APPLY_ARGS} 2>&1 | tee "${APPLY_LOG_PATH}"
+            APPLY_EXIT_CODE=${PIPESTATUS[0]}
+            set -e
+
+            if [ "$APPLY_EXIT_CODE" -eq 0 ]; then
+              break
+            fi
+
+            IS_TRANSIENT_RETRYABLE_ERROR=false
+            RETRY_REASON=""
+            if [ "$APPLY_EXIT_CODE" -eq 124 ]; then
+              echo "terraform apply exceeded TERRAFORM_APPLY_TIMEOUT=${TERRAFORM_APPLY_TIMEOUT}." >&2
+            fi
+
+            if grep -q "module.postgresql.azurerm_postgresql_flexible_server.main" "${APPLY_LOG_PATH}" && \
+               grep -Eiq "InternalServerError|Internal Server Error|StatusCode=500|unexpected status 500" "${APPLY_LOG_PATH}"; then
+              IS_TRANSIENT_RETRYABLE_ERROR=true
+              RETRY_REASON="transient Azure PostgreSQL Flexible Server InternalServerError"
+            fi
+
+            if grep -Eq "module\\.ai_foundry\\[0\\]\\.azapi_resource\\.model_deployment" "${APPLY_LOG_PATH}" && \
+               grep -Eiq "RequestConflict|Another operation is being performed on the parent resource" "${APPLY_LOG_PATH}"; then
+              IS_TRANSIENT_RETRYABLE_ERROR=true
+              RETRY_REASON="transient Azure AI Foundry deployment RequestConflict (409)"
+            fi
+
+            if grep -Eq "module\\.api_management\\.azurerm_api_management_api_policy\\.(main|openai)\\[0\\]" "${APPLY_LOG_PATH}" && \
+               grep -Eiq "PreconditionFailed|412 \\(412 Precondition Failed\\)" "${APPLY_LOG_PATH}"; then
+              IS_TRANSIENT_RETRYABLE_ERROR=true
+              RETRY_REASON="transient Azure API Management policy PreconditionFailed (412)"
+            fi
+
+            import_existing_resource \
+              "azurerm_network_security_group.corp_app_gateway[0]" \
+              "with azurerm_network_security_group.corp_app_gateway[0]," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.Network/networkSecurityGroups/[^"?[:space:]]+' \
+              "corp app gateway network security group" || true
+
+            import_existing_resource \
+              "azurerm_network_security_rule.corp_app_gateway_allow_gateway_manager[0]" \
+              "with azurerm_network_security_rule.corp_app_gateway_allow_gateway_manager[0]," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.Network/networkSecurityGroups/[^"?[:space:]]+/securityRules/[^"?[:space:]]+' \
+              "corp app gateway AllowGatewayManager security rule" || true
+
+            import_existing_resource \
+              "azurerm_subnet.corp_app_gateway[0]" \
+              "with azurerm_subnet.corp_app_gateway[0]," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.Network/virtualNetworks/[^"?[:space:]]+/subnets/[^"?[:space:]]+' \
+              "corp app gateway subnet" || true
+
+            import_existing_resource \
+              "azurerm_subnet_network_security_group_association.corp_app_gateway[0]" \
+              "with azurerm_subnet_network_security_group_association.corp_app_gateway[0]," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.Network/virtualNetworks/[^"?[:space:]]+/subnets/[^"?[:space:]]+' \
+              "corp app gateway subnet NSG association" || true
+
+            import_existing_resource \
+              "azurerm_network_security_group.corp_private_endpoint[0]" \
+              "with azurerm_network_security_group.corp_private_endpoint[0]," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.Network/networkSecurityGroups/[^"?[:space:]]+' \
+              "corp private endpoint network security group" || true
+
+            import_existing_resource \
+              "azurerm_subnet.corp_private_endpoint[0]" \
+              "with azurerm_subnet.corp_private_endpoint[0]," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.Network/virtualNetworks/[^"?[:space:]]+/subnets/[^"?[:space:]]+' \
+              "corp private endpoint subnet" || true
+
+            import_existing_resource \
+              "azurerm_subnet_network_security_group_association.corp_private_endpoint[0]" \
+              "with azurerm_subnet_network_security_group_association.corp_private_endpoint[0]," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.Network/virtualNetworks/[^"?[:space:]]+/subnets/[^"?[:space:]]+' \
+              "corp private endpoint subnet NSG association" || true
+
+            import_existing_resource \
+              "module.api_management.azurerm_api_management.main" \
+              "with module.api_management.azurerm_api_management.main," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.ApiManagement/service/[^"?[:space:]]+' \
+              "Azure API Management instance" \
+              "Resource Group Name" \
+              "Service Name" \
+              "Microsoft.ApiManagement/service" || true
+
+            import_existing_resource \
+              "module.container_apps.module.container_app.azapi_resource.container_app" \
+              "with module.container_apps.module.container_app.azapi_resource.container_app," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.App/containerApps/[^"?[:space:]]+' \
+              "API container app" || true
+
+            import_existing_resource \
+              "module.frontend.module.frontend.azapi_resource.container_app" \
+              "with module.frontend.module.frontend.azapi_resource.container_app," \
+              '/subscriptions/[^"?[:space:]]+/resourceGroups/[^"?[:space:]]+/providers/Microsoft\.App/containerApps/[^"?[:space:]]+' \
+              "frontend container app" || true
+
+            import_role_assignment \
+              "azurerm_role_assignment.api_uami_storage_blob_contributor" \
+              "with azurerm_role_assignment.api_uami_storage_blob_contributor," \
+              "API UAMI storage blob contributor role assignment" || true
+
+            import_role_assignment \
+              "azurerm_role_assignment.api_uami_acr_pull" \
+              "with azurerm_role_assignment.api_uami_acr_pull," \
+              "API UAMI ACR pull role assignment" || true
+
+            import_role_assignment \
+              "azurerm_role_assignment.frontend_uami_acr_pull" \
+              "with azurerm_role_assignment.frontend_uami_acr_pull," \
+              "frontend UAMI ACR pull role assignment" || true
+
+            import_role_assignment \
+              "azurerm_role_assignment.container_app_acr_pull" \
+              "with azurerm_role_assignment.container_app_acr_pull," \
+              "container app ACR pull role assignment" || true
+
+            import_role_assignment \
+              "azurerm_role_assignment.frontend_acr_pull" \
+              "with azurerm_role_assignment.frontend_acr_pull," \
+              "frontend ACR pull role assignment" || true
+
+            import_role_assignment \
+              "azurerm_role_assignment.api_workload_env_contributor" \
+              "with azurerm_role_assignment.api_workload_env_contributor," \
+              "API workload environment contributor role assignment" || true
+
+            import_role_assignment \
+              "azurerm_role_assignment.apim_cognitive_services[0]" \
+              "with azurerm_role_assignment.apim_cognitive_services[0]," \
+              "APIM cognitive services role assignment" || true
+
+            if (grep -Eiq "${LEGACY_APIM_ERROR_IDENTIFIER_PATTERN}" "${APPLY_LOG_PATH}" || \
+                grep -Fqi "${LEGACY_APIM_ERROR_MESSAGE_PATTERN}" "${APPLY_LOG_PATH}") && \
+                grep -q "module.api_management" "${APPLY_LOG_PATH}"; then
+              IS_TRANSIENT_RETRYABLE_ERROR=true
+              RETRY_REASON="legacy APIM Consumption state drift detected. Forcing APIM replacement"
+              EXTRA_APPLY_ARGS="-replace=module.api_management.azurerm_api_management.main"
+            fi
+
+            if grep -Eiq "${PRIVATE_ENDPOINT_ERROR_PATTERN}" "${APPLY_LOG_PATH}"; then
+              set +e
+              reconcile_private_endpoint_state
+              private_endpoint_reconcile_exit_code=$?
+              set -e
+
+              if [ "${private_endpoint_reconcile_exit_code}" -eq 2 ]; then
+                echo "Skipping automated private endpoint remediation for this run; manual workaround steps were printed above." >&2
+                echo "AUTO_SKIP_DOWNSTREAM_DEPLOYMENT=true" >> "$GITHUB_ENV"
+                break
+              fi
+
+              if [ "${private_endpoint_reconcile_exit_code}" -ne 0 ]; then
+                echo "Private endpoint errors were detected, but no stale or failed private endpoints required reconciliation." >&2
+              fi
+            fi
+
+            if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ] && [ "$IS_TRANSIENT_RETRYABLE_ERROR" = true ]; then
+              echo "Detected ${RETRY_REASON}. Retrying in ${RETRY_DELAY_SECONDS}s..."
+              sleep "$RETRY_DELAY_SECONDS"
+              continue
+            fi
+
+            exit "$APPLY_EXIT_CODE"
+          done
+
+      - name: refresh-terraform-outputs
+        if: ${{ env.PLAN_ONLY != 'true' &&
+          env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true' }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Outputs are already in state from the core apply (or previous deploys).
+          # A full refresh-only apply here is harmful: it pulls live Azure values
+          # into state that may include platform-managed properties (e.g. workload
+          # profiles, shared key access policy overrides) causing false drift in
+          # downstream steps.
+          #
+          # We verify outputs are readable; the next step handles missing outputs
+          # gracefully via emit_downstream_manual_workaround.
+          echo "Verifying Terraform outputs are available in state..."
+          if ! terraform output container_registry_login_server >/dev/null 2>&1; then
+            echo "::warning::Terraform outputs not in state. Running targeted refresh..."
+            terraform apply -refresh-only -auto-approve \
+              -lock-timeout="${TF_LOCK_TIMEOUT}" \
+              -var-file="${TFVARS_FILE}" \
+              -target=module.container_registry \
+              -target=azurerm_resource_group.main \
+              ${{ steps.tfvars.outputs.tf_secret_args }}
+          fi
+
+      - name: get-acr-and-resource-group-from-terraform-outputs
+        id: tfout
+        if: ${{ env.PLAN_ONLY != 'true' &&
+          env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true' }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          emit_downstream_manual_workaround() {
+            local reason="$1"
+
+            echo "Skipping downstream image build and app deployment because Terraform outputs are incomplete." >&2
+            echo "Reason: ${reason}" >&2
+            echo "Manual workaround:" >&2
+            echo "1. Complete the remaining infrastructure remediation steps printed earlier in the workflow." >&2
+            echo "2. Verify Terraform outputs are available locally: terraform output container_registry_login_server and terraform output resource_group_name." >&2
+            echo "3. Re-run the workflow after the infrastructure state is healthy." >&2
+          }
+
+          read_terraform_output() {
+            local output_name="$1"
+            local value_file
+            local error_file
+
+            value_file="$(mktemp)"
+            error_file="$(mktemp)"
+
+            set +e
+            TF_LOG=OFF TF_LOG_PROVIDER=OFF terraform output -raw "${output_name}" >"${value_file}" 2>"${error_file}"
+            local exit_code=$?
+            set -e
+
+            local value=""
+            local error_text=""
+
+            if [ -s "${value_file}" ]; then
+              value="$(tr -d '\r' < "${value_file}")"
+            fi
+
+            if [ -s "${error_file}" ]; then
+              error_text="$(tr -d '\r' < "${error_file}")"
+            fi
+
+            rm -f "${value_file}" "${error_file}"
+
+            printf -v TF_OUTPUT_VALUE '%s' "${value}"
+            printf -v TF_OUTPUT_ERROR '%s' "${error_text}"
+            return "${exit_code}"
+          }
+
+          read_terraform_output "container_registry_name"
+          ACR_NAME_EXIT_CODE=$?
+          ACR_NAME="${TF_OUTPUT_VALUE}"
+          ACR_NAME_ERROR="${TF_OUTPUT_ERROR}"
+
+          read_terraform_output "container_registry_login_server"
+          ACR_LOGIN_SERVER_EXIT_CODE=$?
+          ACR_LOGIN_SERVER="${TF_OUTPUT_VALUE}"
+          ACR_LOGIN_SERVER_ERROR="${TF_OUTPUT_ERROR}"
+
+          read_terraform_output "resource_group_name"
+          RESOURCE_GROUP_EXIT_CODE=$?
+          RESOURCE_GROUP="${TF_OUTPUT_VALUE}"
+          RESOURCE_GROUP_ERROR="${TF_OUTPUT_ERROR}"
+
+          if [ "$ACR_NAME_EXIT_CODE" -ne 0 ] || [ "$ACR_LOGIN_SERVER_EXIT_CODE" -ne 0 ] || [ "$RESOURCE_GROUP_EXIT_CODE" -ne 0 ]; then
+            emit_downstream_manual_workaround "terraform output retrieval failed"
+            [ -z "${ACR_NAME_ERROR}" ] || echo "container_registry_name error: ${ACR_NAME_ERROR}" >&2
+            [ -z "${ACR_LOGIN_SERVER_ERROR}" ] || echo "container_registry_login_server error: ${ACR_LOGIN_SERVER_ERROR}" >&2
+            [ -z "${RESOURCE_GROUP_ERROR}" ] || echo "resource_group_name error: ${RESOURCE_GROUP_ERROR}" >&2
+            echo "AUTO_SKIP_DOWNSTREAM_DEPLOYMENT=true" >> "$GITHUB_ENV"
+            printf 'acr_name=\n' >> "$GITHUB_OUTPUT"
+            printf 'acr_login_server=\n' >> "$GITHUB_OUTPUT"
+            printf 'resource_group=\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$ACR_LOGIN_SERVER" ]; then
+            emit_downstream_manual_workaround "ACR login server output is empty"
+            echo "AUTO_SKIP_DOWNSTREAM_DEPLOYMENT=true" >> "$GITHUB_ENV"
+            printf 'acr_name=%s\n' "$ACR_NAME" >> "$GITHUB_OUTPUT"
+            printf 'acr_login_server=\n' >> "$GITHUB_OUTPUT"
+            printf 'resource_group=%s\n' "$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf 'acr_name=%s\n' "$ACR_NAME" >> "$GITHUB_OUTPUT"
+          printf 'acr_login_server=%s\n' "$ACR_LOGIN_SERVER" >> "$GITHUB_OUTPUT"
+          printf 'resource_group=%s\n' "$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
+
+          # Read Entra App Registration client ID (may be empty if not created by Terraform)
+          read_terraform_output "entra_app_client_id" || true
+          printf 'entra_app_client_id=%s\n' "$TF_OUTPUT_VALUE" >> "$GITHUB_OUTPUT"
+
+          read_terraform_output "api_uami_id" || true
+          printf 'api_uami_id=%s\n' "$TF_OUTPUT_VALUE" >> "$GITHUB_OUTPUT"
+
+          read_terraform_output "frontend_uami_id" || true
+          printf 'frontend_uami_id=%s\n' "$TF_OUTPUT_VALUE" >> "$GITHUB_OUTPUT"
+
+          # Export API env vars as a single JSON blob for dynamic --set-env-vars
+          API_ENV_JSON="$(terraform output -json api_container_env_vars 2>/dev/null || echo '{}')"
+          printf 'api_env_vars=%s\n' "$API_ENV_JSON" >> "$GITHUB_OUTPUT"
+
+          # Export frontend build env vars as a single JSON blob
+          FRONTEND_ENV_JSON="$(terraform output -json frontend_build_env_vars 2>/dev/null || echo '{}')"
+          printf 'frontend_build_env_vars=%s\n' "$FRONTEND_ENV_JSON" >> "$GITHUB_OUTPUT"
+
+      - name: build-frontend
+        if:
+          ${{ env.PLAN_ONLY != 'true' && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_build) && env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true'
+          }}
+        working-directory: app/frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Inject all frontend build vars from Terraform output (single source of truth)
+          FRONTEND_VARS='${{ steps.tfout.outputs.frontend_build_env_vars }}'
+          if [ -n "$FRONTEND_VARS" ] && [ "$FRONTEND_VARS" != "{}" ]; then
+            while IFS='=' read -r key value; do
+              export "$key=$value"
+            done < <(echo "$FRONTEND_VARS" | jq -r 'to_entries[] | "\(.key)=\(.value)"')
+          fi
+
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run build
+
+      - name: refresh-azure-login-before-build
+        if:
+          ${{ env.PLAN_ONLY != 'true' && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_build) && env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true'
+          }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      # Pre-warm ARM + Key Vault data-plane tokens while the short-lived GitHub
+      # OIDC assertion (~5 min) is still valid. The container-apps apply that
+      # follows reads ephemeral azurerm_key_vault_secret values (vault.azure.net
+      # audience) on every apply, but it runs after `npm ci` + `docker build/push`
+      # which easily exceed the assertion lifetime. Federated logins cache no
+      # refresh token, so a fresh audience would otherwise re-present the expired
+      # assertion (AADSTS700024). Caching the vault token now (valid ~60-90 min)
+      # lets the later apply reuse it.
+      - name: prewarm-keyvault-token-before-build
+        if:
+          ${{ env.PLAN_ONLY != 'true' && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_build) && env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true'
+          }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          az account get-access-token --resource https://management.azure.com/ --output none
+          az account get-access-token --resource https://vault.azure.net --output none
+          echo "[OK] Pre-warmed ARM and Key Vault data-plane tokens."
+
+      - name: build-and-push-frontend-image
+        if:
+          ${{ env.PLAN_ONLY != 'true' && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_build) && env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true'
+          }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # PBMM: build on the self-hosted runner (already inside the VNet) and
+          # push to the ACR private endpoint. `az acr login` authenticates over
+          # the private endpoint; no public network access, no agent pool, and
+          # no trusted-services bypass required — all of which are blocked in a
+          # locked-down PBMM landing zone.
+          az acr login --name "${{ steps.tfout.outputs.acr_name }}"
+          FRONTEND_IMAGE="${{ steps.tfout.outputs.acr_login_server }}/pronghorn-frontend:${IMAGE_TAG}"
+          docker build -t "$FRONTEND_IMAGE" -f app/frontend/Dockerfile app/frontend
+          docker push "$FRONTEND_IMAGE"
+          echo "Pushed frontend image: ${FRONTEND_IMAGE}"
+
+      - name: build-api
+        if:
+          ${{ env.PLAN_ONLY != 'true' && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_build) && env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true'
+          }}
+        working-directory: app/backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run build
+
+      - name: build-and-push-api-image
+        if:
+          ${{ env.PLAN_ONLY != 'true' && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_build) && env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true'
+          }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Copy migrations into API build context so the container can run them at startup
+          cp -r infra/migrations app/backend/migrations
+          # PBMM: build on the self-hosted runner (inside the VNet) and push to
+          # the ACR private endpoint via `az acr login`. No public network
+          # access, no agent pool, no trusted-services bypass required.
+          az acr login --name "${{ steps.tfout.outputs.acr_name }}"
+          API_IMAGE="${{ steps.tfout.outputs.acr_login_server }}/pronghorn-api:${IMAGE_TAG}"
+          docker build -t "$API_IMAGE" -f app/backend/Dockerfile app/backend
+          docker push "$API_IMAGE"
+          echo "Pushed API image: ${API_IMAGE}"
+
+      - name: deploy-container-apps-plan
+        if:
+          ${{ env.PLAN_ONLY == 'true' && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_container_apps) && env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true' }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -lock-timeout="${TF_LOCK_TIMEOUT}" \
+            -var-file="${TFVARS_FILE}" \
+            ${{ steps.tfvars.outputs.tf_secret_args }}
+
+      - name: deploy-container-apps-apply
+        if:
+          ${{ env.PLAN_ONLY != 'true' && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_container_apps) &&
+          env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true' }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply -auto-approve \
+            -lock-timeout="${TF_LOCK_TIMEOUT}" \
+            -refresh=false \
+            -var-file="${TFVARS_FILE}" \
+            -var="container_image=${{ steps.tfout.outputs.acr_login_server }}/pronghorn-api:${IMAGE_TAG}" \
+            -var="frontend_container_image=${{ steps.tfout.outputs.acr_login_server }}/pronghorn-frontend:${IMAGE_TAG}" \
+            ${{ steps.tfvars.outputs.tf_secret_args }}
+
+      - name: update-container-apps-images
+        if:
+          ${{ env.PLAN_ONLY != 'true' && (github.event_name != 'workflow_dispatch' ||
+          (!inputs.skip_container_apps && !inputs.skip_build))
+          && env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACR_SERVER="${{ steps.tfout.outputs.acr_login_server }}"
+          RG="${{ steps.tfout.outputs.resource_group }}"
+          API_UAMI="${{ steps.tfout.outputs.api_uami_id }}"
+          FRONTEND_UAMI="${{ steps.tfout.outputs.frontend_uami_id }}"
+
+          echo "Configuring ACR registry on container apps..."
+          az containerapp registry set \
+            --name ca-pronghorn-api \
+            --resource-group "$RG" \
+            --server "$ACR_SERVER" \
+            --identity "${API_UAMI:-system}"
+
+          az containerapp registry set \
+            --name ca-pronghorn-frontend \
+            --resource-group "$RG" \
+            --server "$ACR_SERVER" \
+            --identity "${FRONTEND_UAMI:-system}"
+
+          echo "Waiting for registry operations to settle..."
+          sleep 30
+
+          retry_containerapp_update() {
+            local max_attempts=3
+            local delay=20
+            local attempt=1
+            while [ "$attempt" -le "$max_attempts" ]; do
+              if "$@" 2>&1; then
+                return 0
+              fi
+              echo "Attempt ${attempt}/${max_attempts} failed with ContainerAppLockConflict. Retrying in ${delay}s..."
+              sleep "$delay"
+              attempt=$((attempt + 1))
+            done
+            echo "All ${max_attempts} attempts failed." >&2
+            return 1
+          }
+
+          echo "Updating API container app with image tag: ${IMAGE_TAG}"
+
+          # Build env var args from Terraform output (single source of truth)
+          readarray -t ENV_PAIRS < <(
+            echo '${{ steps.tfout.outputs.api_env_vars }}' \
+              | jq -r 'to_entries[] | "\(.key)=\(.value)"'
+          )
+
+          retry_containerapp_update az containerapp update \
+            --name ca-pronghorn-api \
+            --resource-group "$RG" \
+            --image "${ACR_SERVER}/pronghorn-api:${IMAGE_TAG}" \
+            --set-env-vars "${ENV_PAIRS[@]}"
+
+          echo "Updating frontend container app with image tag: ${IMAGE_TAG}"
+          retry_containerapp_update az containerapp update \
+            --name ca-pronghorn-frontend \
+            --resource-group "$RG" \
+            --image "${ACR_SERVER}/pronghorn-frontend:${IMAGE_TAG}"
+
+      - name: show-deployment-outputs
+        if:
+          ${{ env.PLAN_ONLY != 'true' && (github.event_name != 'workflow_dispatch' ||
+          !inputs.skip_container_apps) && env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT
+          != 'true' }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_URL="$(terraform output -raw container_app_url 2>/dev/null || true)"
+          FRONTEND_URL="$(terraform output -raw frontend_app_url 2>/dev/null || true)"
+          APIM_URL="$(terraform output -raw api_management_gateway_url 2>/dev/null || true)"
+
+          echo "Frontend URL: $FRONTEND_URL"
+          echo "API URL:      $API_URL"
+          echo "APIM URL:     $APIM_URL"
+
+      - name: capture-terraform-outputs-json
+        if: ${{ env.PLAN_ONLY != 'true' &&
+          env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true' }}
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../.rollback
+          terraform output -json > ../.rollback/terraform-outputs.json
+
+      - name: capture-runtime-revisions
+        id: runtime_revisions
+        if: ${{ env.PLAN_ONLY != 'true' &&
+          env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .rollback
+          FRONTEND_REVISION="$(az containerapp revision list --name ca-pronghorn-frontend --resource-group "${{ steps.tfout.outputs.resource_group }}" --query "[?properties.active] | [0].name" -o tsv 2>/dev/null || true)"
+          API_REVISION="$(az containerapp revision list --name ca-pronghorn-api --resource-group "${{ steps.tfout.outputs.resource_group }}" --query "[?properties.active] | [0].name" -o tsv 2>/dev/null || true)"
+          printf 'frontend_revision=%s\n' "$FRONTEND_REVISION" >> "$GITHUB_OUTPUT"
+          printf 'api_revision=%s\n' "$API_REVISION" >> "$GITHUB_OUTPUT"
+
+      - name: capture-deployment-snapshot
+        if: ${{ env.PLAN_ONLY != 'true' &&
+          env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true' }}
+        shell: pwsh
+        run: |
+          ./infra/scripts/get-deployment-snapshot.ps1 `
+            -Environment "${{ github.ref_name }}" `
+            -Archetype "corp" `
+            -SourceRef "${{ github.sha }}" `
+            -SnapshotId "${{ github.ref_name }}-${{ github.run_id }}" `
+            -TerraformOutputsPath ".rollback/terraform-outputs.json" `
+            -FrontendImage "${{ steps.tfout.outputs.acr_login_server }}/pronghorn-frontend:${{ env.IMAGE_TAG }}" `
+            -ApiImage "${{ steps.tfout.outputs.acr_login_server }}/pronghorn-api:${{ env.IMAGE_TAG }}" `
+            -FrontendRevision "${{ steps.runtime_revisions.outputs.frontend_revision }}" `
+            -ApiRevision "${{ steps.runtime_revisions.outputs.api_revision }}" `
+            -OutputPath ".rollback/deployment-snapshot.json"
+
+      - name: upload-deployment-snapshot
+        if: ${{ env.PLAN_ONLY != 'true' &&
+          env.AUTO_SKIP_DOWNSTREAM_DEPLOYMENT != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-snapshot-${{ github.ref_name }}
+          path: .rollback/deployment-snapshot.json
+          if-no-files-found: error
+          overwrite: true
+
+      - name: azure-portal-links
+        if: ${{ env.PLAN_ONLY != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUB="${{ env.AZURE_SUBSCRIPTION_ID }}"
+          RG="${{ steps.tfout.outputs.resource_group }}"
+          if [ -n "$RG" ]; then
+            echo "Resource Group Portal: https://portal.azure.com/#@/resource/subscriptions/$SUB/resourceGroups/$RG/overview"
+          fi
+
+      # NOTE: PBMM has NO lock-network teardown steps. Storage accounts, Key
+      # Vault, and ACR keep public network access disabled at all times; the
+      # self-hosted runner reaches them through private endpoints.
+
+  deploy-ai-models:
+    name: deploy-ai-models
+    needs: deploy
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_ai_models }}
+    runs-on: [self-hosted, linux, pbmm]
+    timeout-minutes: 60
+    environment: ${{ github.ref_name }}
+    env:
+      ENVIRONMENT: ${{ github.ref_name }}
+      TFVARS_FILE: params/${{ github.ref_name }}.tfvars
+      # Azure login (AZURE_*/ARM_*) and the tfstate backend (TFSTATE_*) are both
+      # sourced from the branch's GitHub Environment Variables by
+      # parse-deployment-config.
+      ARM_USE_OIDC: "true"
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: parse-deployment-config
+        shell: bash
+        env:
+          VAR_SUBSCRIPTION_ID: ${{ vars.SUBSCRIPTION_ID }}
+          VAR_AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          VAR_AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          VAR_TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          VAR_TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          VAR_TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+          VAR_TFSTATE_KEY: ${{ vars.TFSTATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          TFVARS_PATH="infra/${TFVARS_FILE}"
+          if [ ! -f "${TFVARS_PATH}" ]; then
+            echo "Missing required tfvars file: ${TFVARS_PATH}" >&2
+            exit 1
+          fi
+
+          SUB="${VAR_SUBSCRIPTION_ID}"
+          CLIENT="${VAR_AZURE_CLIENT_ID}"
+          TENANT="${VAR_AZURE_TENANT_ID}"
+          RG="${VAR_TFSTATE_RESOURCE_GROUP}"
+          SA="${VAR_TFSTATE_STORAGE_ACCOUNT}"
+          CONTAINER="${VAR_TFSTATE_CONTAINER}"
+          KEY="${VAR_TFSTATE_KEY}"
+
+          missing=()
+          [ -n "$SUB" ] || missing+=("SUBSCRIPTION_ID (GitHub environment variable)")
+          [ -n "$CLIENT" ] || missing+=("AZURE_CLIENT_ID (GitHub environment variable)")
+          [ -n "$TENANT" ] || missing+=("AZURE_TENANT_ID (GitHub environment variable)")
+          [ -n "$RG" ] || missing+=("TFSTATE_RESOURCE_GROUP (GitHub environment variable)")
+          [ -n "$SA" ] || missing+=("TFSTATE_STORAGE_ACCOUNT (GitHub environment variable)")
+          [ -n "$CONTAINER" ] || missing+=("TFSTATE_CONTAINER (GitHub environment variable)")
+          [ -n "$KEY" ] || missing+=("TFSTATE_KEY (GitHub environment variable)")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "Missing required deployment config values: ${missing[*]}" >&2
+            exit 1
+          fi
+
+          {
+            echo "AZURE_CLIENT_ID=${CLIENT}"
+            echo "AZURE_TENANT_ID=${TENANT}"
+            echo "AZURE_SUBSCRIPTION_ID=${SUB}"
+            echo "ARM_CLIENT_ID=${CLIENT}"
+            echo "ARM_TENANT_ID=${TENANT}"
+            echo "ARM_SUBSCRIPTION_ID=${SUB}"
+            echo "TFSTATE_RESOURCE_GROUP=${RG}"
+            echo "TFSTATE_STORAGE_ACCOUNT=${SA}"
+            echo "TFSTATE_CONTAINER=${CONTAINER}"
+            echo "TFSTATE_KEY=${KEY}"
+          } >> "$GITHUB_ENV"
+          echo "Parsed deployment config from GitHub environment '${ENVIRONMENT}' variables."
+
+      # Export environment-specific Terraform inputs (from GitHub Environment
+      # Variables) as TF_VAR_*. Empty values are skipped so the Terraform default
+      # applies. Mirrors the same step in the deploy job.
+      - name: export-terraform-environment-config
+        shell: bash
+        env:
+          TF_VAR_subscription_id: ${{ vars.SUBSCRIPTION_ID }}
+          TF_VAR_azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
+          TF_VAR_azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+          TF_VAR_delegated_subnet_id: ${{ vars.DELEGATED_SUBNET_ID }}
+          TF_VAR_keyvault_private_endpoint_subnet_id: ${{ vars.KEYVAULT_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_storage_private_endpoint_subnet_id: ${{ vars.STORAGE_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_container_apps_subnet_id: ${{ vars.CONTAINER_APPS_SUBNET_ID }}
+          TF_VAR_aca_environment_private_endpoint_subnet_id: ${{ vars.ACA_ENVIRONMENT_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_workload_aca_subnet_id: ${{ vars.WORKLOAD_ACA_SUBNET_ID }}
+          TF_VAR_workload_aca_private_endpoint_subnet_id: ${{ vars.WORKLOAD_ACA_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_apim_subnet_id: ${{ vars.APIM_SUBNET_ID }}
+          TF_VAR_acr_private_endpoint_subnet_id: ${{ vars.ACR_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_ai_foundry_private_endpoint_subnet_id: ${{ vars.AI_FOUNDRY_PRIVATE_ENDPOINT_SUBNET_ID }}
+          TF_VAR_central_dns_subscription_id: ${{ vars.CENTRAL_DNS_SUBSCRIPTION_ID }}
+          TF_VAR_central_dns_resource_group_name: ${{ vars.CENTRAL_DNS_RESOURCE_GROUP_NAME }}
+          TF_VAR_frontend_app_url_override: ${{ vars.FRONTEND_APP_URL_OVERRIDE }}
+          TF_VAR_api_base_url_override: ${{ vars.API_BASE_URL_OVERRIDE }}
+        run: |
+          set -euo pipefail
+          exported=0
+          for name in \
+            TF_VAR_subscription_id \
+            TF_VAR_azure_client_id \
+            TF_VAR_azure_tenant_id \
+            TF_VAR_delegated_subnet_id \
+            TF_VAR_keyvault_private_endpoint_subnet_id \
+            TF_VAR_storage_private_endpoint_subnet_id \
+            TF_VAR_container_apps_subnet_id \
+            TF_VAR_aca_environment_private_endpoint_subnet_id \
+            TF_VAR_workload_aca_subnet_id \
+            TF_VAR_workload_aca_private_endpoint_subnet_id \
+            TF_VAR_apim_subnet_id \
+            TF_VAR_acr_private_endpoint_subnet_id \
+            TF_VAR_ai_foundry_private_endpoint_subnet_id \
+            TF_VAR_central_dns_subscription_id \
+            TF_VAR_central_dns_resource_group_name \
+            TF_VAR_frontend_app_url_override \
+            TF_VAR_api_base_url_override; do
+            val="${!name:-}"
+            if [ -n "$val" ]; then
+              echo "${name}=${val}" >> "$GITHUB_ENV"
+              exported=$((exported + 1))
+            fi
+          done
+          echo "Exported ${exported} TF_VAR_* value(s) from GitHub environment '${ENVIRONMENT}'."
+
+      - name: azure-login-oidc
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: setup-terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: terraform-init
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -reconfigure \
+            -backend-config="resource_group_name=${TFSTATE_RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${TFSTATE_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${TFSTATE_CONTAINER}" \
+            -backend-config="key=${TFSTATE_KEY}" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: resolve-ai-services-account
+        id: ai_svc
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          AI_ENDPOINT="$(TF_LOG=OFF terraform output -raw ai_foundry_endpoint 2>/dev/null || true)"
+          if [ -z "$AI_ENDPOINT" ]; then
+            echo "AI Foundry endpoint not found in Terraform outputs. Skipping AI model deployment." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ACCOUNT_NAME="$(echo "$AI_ENDPOINT" | sed -n 's|https://\([^.]*\)\..*|\1|p')"
+          RG="$(TF_LOG=OFF terraform output -raw resource_group_name 2>/dev/null || true)"
+          echo "account_name=${ACCOUNT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "resource_group=${RG}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: deploy-ai-models
+        if: ${{ steps.ai_svc.outputs.skip != 'true' }}
+        shell: pwsh
+        run: |
+          ./infra/scripts/Deploy-AIModels.ps1 `
+            -SubscriptionId "${{ env.AZURE_SUBSCRIPTION_ID }}" `
+            -ResourceGroupName "${{ steps.ai_svc.outputs.resource_group }}" `
+            -AccountName "${{ steps.ai_svc.outputs.account_name }}" `
+            -ConfigPath "infra/config/ai-models.json"
+
+  # ==========================================================================
+  # Security scans now run in the ci.yml workflow on pull requests.
+  # ==========================================================================

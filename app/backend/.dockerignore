@@ -1,0 +1,29 @@
+# Dependencies
+node_modules
+npm-debug.log
+
+# Source files (using compiled dist)
+src
+*.ts
+tsconfig.json
+
+# Development
+.env
+.env.local
+*.log
+.vscode
+.idea
+
+# Git
+.git
+.gitignore
+
+# Tests
+tests
+*.test.ts
+*.spec.ts
+coverage
+
+# Documentation
+*.md
+docs

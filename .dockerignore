@@ -1,0 +1,65 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+bun.lockb
+
+# Testing
+coverage/
+
+# Build output (keep dist for deployment)
+# dist/ - needed for frontend container
+build/
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Infrastructure (not needed for frontend build)
+infra/
+!infra/migrations/
+
+# API (separate container)
+api/
+
+# Supabase
+supabase/
+
+# Python virtual environment
+.venv/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Documentation
+*.md
+!README.md
+APIM_ALIGNMENT_REPORT.md
+RPC_HANDLERS_IMPLEMENTATION.md
+
+# Misc
+.azure/
+*.tar.gz
+*.py
+schema_diff_source.txt
+.vs/
+.vs/

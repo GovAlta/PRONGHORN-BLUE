@@ -1,0 +1,26 @@
+{
+  "projectTypes": [
+    {
+      "value": "docker",
+      "label": "Docker Container",
+      "serviceType": "web_service",
+      "runtime": "docker",
+      "buildCommand": "",
+      "runCommand": "",
+      "installCommand": "",
+      "buildFolder": "/",
+      "runFolder": "/",
+      "description": "Uses Dockerfile in repository root"
+    }
+  ],
+  "runtimes": [
+    "docker",
+    "elixir",
+    "go",
+    "node",
+    "python",
+    "ruby",
+    "rust",
+    "image"
+  ]
+}

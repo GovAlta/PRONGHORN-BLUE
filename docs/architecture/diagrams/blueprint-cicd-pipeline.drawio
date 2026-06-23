@@ -1,0 +1,298 @@
+<mxfile host="Electron" modified="2026-06-12T14:14:00.000Z" version="26.0.0">
+  <diagram name="CICD-Pipeline" id="cicd-page1">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="&lt;b&gt;Pronghorn CI/CD Pipeline Architecture&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontColor=#333333;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="450" y="15" width="500" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== CI SECTION ===================== -->
+        <mxCell id="ci-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#4CAF50;strokeWidth=2;arcSize=4;" vertex="1" parent="1">
+          <mxGeometry x="30" y="60" width="1640" height="370" as="geometry" />
+        </mxCell>
+        <mxCell id="ci-title" value="&lt;b&gt;CI Pipeline&lt;/b&gt; (ci.yml on Pull Requests)" style="text;html=1;align=left;fontSize=14;fontColor=#2E7D32;fontStyle=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="50" y="68" width="400" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Column 1: Trigger -->
+        <mxCell id="ci-pr" value="&lt;b&gt;PR Opened&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;shadow=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="190" width="110" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Column 2: Detect Changes -->
+        <mxCell id="ci-detect" value="&lt;b&gt;Detect&lt;br&gt;Changes&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;dorny/paths-filter&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;arcSize=12;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="230" y="185" width="120" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="e-pr-detect" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;strokeWidth=2;" edge="1" source="ci-pr" target="ci-detect" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 3: Build/Test jobs — stacked vertically with clear spacing -->
+        <mxCell id="ci-fe" value="&lt;b&gt;Frontend CI&lt;/b&gt;&lt;br&gt;lint / build / test" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="430" y="110" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ci-be" value="&lt;b&gt;Backend CI&lt;/b&gt;&lt;br&gt;build / jest test" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="430" y="195" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ci-infra" value="&lt;b&gt;Infra Plan&lt;/b&gt;&lt;br&gt;fmt / validate / plan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="430" y="280" width="150" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Detect → Build/Test edges (straight horizontal, no crossing) -->
+        <mxCell id="e-det-fe" value="&lt;font style=&quot;font-size:8px&quot;&gt;frontend&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ci-detect" target="ci-fe" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-det-be" value="&lt;font style=&quot;font-size:8px&quot;&gt;backend&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ci-detect" target="ci-be" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-det-infra" value="&lt;font style=&quot;font-size:8px&quot;&gt;infra&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;strokeWidth=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ci-detect" target="ci-infra" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 4: Security jobs — stacked vertically aligned with build jobs -->
+        <mxCell id="ci-audit" value="&lt;b&gt;NPM Audit&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#F57C00;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="660" y="110" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ci-gitleaks" value="&lt;b&gt;Gitleaks&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#F57C00;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="660" y="200" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ci-checkov" value="&lt;b&gt;Checkov&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#F57C00;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="660" y="290" width="120" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Build → Security edges (straight horizontal) -->
+        <mxCell id="e-fe-audit" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F57C00;strokeWidth=1;" edge="1" source="ci-fe" target="ci-audit" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-be-gitleaks" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F57C00;strokeWidth=1;" edge="1" source="ci-be" target="ci-gitleaks" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-infra-checkov" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F57C00;strokeWidth=1;" edge="1" source="ci-infra" target="ci-checkov" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 5: CI Gate -->
+        <mxCell id="ci-gate" value="&lt;b&gt;CI Gate&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;evaluate all&lt;br&gt;job results&lt;/font&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="860" y="160" width="140" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- Security → Gate edges (converge at right side) -->
+        <mxCell id="e-audit-gate" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F57C00;strokeWidth=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" source="ci-audit" target="ci-gate" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-gitleaks-gate" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F57C00;strokeWidth=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ci-gitleaks" target="ci-gate" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-checkov-gate" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#F57C00;strokeWidth=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" source="ci-checkov" target="ci-gate" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 6: Results -->
+        <mxCell id="ci-pass" value="&lt;b&gt;PR Ready&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;shadow=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="155" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e-gate-pass" value="&lt;b&gt;pass&lt;/b&gt;" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=2;exitX=1;exitY=0.25;exitDx=0;exitDy=0;" edge="1" source="ci-gate" target="ci-pass" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ci-fail" value="&lt;b&gt;Blocked&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeWidth=2;shadow=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="235" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e-gate-fail" value="&lt;b&gt;fail&lt;/b&gt;" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#b85450;strokeWidth=2;exitX=1;exitY=0.75;exitDx=0;exitDy=0;" edge="1" source="ci-gate" target="ci-fail" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- CodeQL (GitHub-managed code scanning, positioned in top-right) -->
+        <mxCell id="ci-codeql" value="&lt;b&gt;CodeQL SAST&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;GitHub code scanning (default setup)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="155" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ci-sarif" value="&lt;b&gt;SARIF&lt;br&gt;Upload&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=1;arcSize=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1480" y="155" width="80" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e-codeql-sarif" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#9673a6;strokeWidth=1;" edge="1" source="ci-codeql" target="ci-sarif" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="ci-leg1" value="&lt;font style=&quot;font-size:9px&quot;&gt;&lt;b&gt;Legend:&lt;/b&gt; Green = build/test &amp;nbsp;|&amp;nbsp; Blue = infra &amp;nbsp;|&amp;nbsp; Orange = security &amp;nbsp;|&amp;nbsp; Purple = SAST &amp;nbsp;|&amp;nbsp; env: pbmm-dev (infra-plan)&lt;/font&gt;" style="text;html=1;align=left;fontSize=9;fontColor=#666;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="50" y="370" width="600" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== CD SECTION ===================== -->
+        <mxCell id="cd-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1976D2;strokeWidth=2;arcSize=4;" vertex="1" parent="1">
+          <mxGeometry x="30" y="460" width="1640" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="cd-title" value="&lt;b&gt;CD Pipelines&lt;/b&gt; (deploy.yml / deploy-dev-internal.yml / deploy-to-pbmm.yml)" style="text;html=1;align=left;fontSize=14;fontColor=#1565C0;fontStyle=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="50" y="468" width="600" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Column 1: Triggers — stacked vertically -->
+        <mxCell id="cd-push" value="&lt;b&gt;Push to&lt;br&gt;main&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="60" y="520" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cd-dispatch" value="&lt;b&gt;Manual&lt;br&gt;Dispatch&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="60" y="590" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cd-devpush" value="&lt;b&gt;Push to&lt;br&gt;dev-internal&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="60" y="660" width="100" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Column 2: Azure Login -->
+        <mxCell id="cd-login" value="&lt;b&gt;Azure Login&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;OIDC federated&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="240" y="585" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e-push-login" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;strokeWidth=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" source="cd-push" target="cd-login" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-disp-login" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;strokeWidth=1;" edge="1" source="cd-dispatch" target="cd-login" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-dev-login" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;strokeWidth=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" source="cd-devpush" target="cd-login" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 3: Terraform -->
+        <mxCell id="cd-tf" value="&lt;b&gt;Terraform&lt;/b&gt;&lt;br&gt;init / plan / apply" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="440" y="585" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e-login-tf" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;strokeWidth=2;" edge="1" source="cd-login" target="cd-tf" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 4: Docker Builds — stacked with spacing -->
+        <mxCell id="cd-fe-build" value="&lt;b&gt;Build Frontend&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;Docker multi-stage&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="660" y="545" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="cd-be-build" value="&lt;b&gt;Build API&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;Docker multi-stage&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="660" y="630" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="e-tf-fe" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=2;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="cd-tf" target="cd-fe-build" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-tf-be" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=2;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="cd-tf" target="cd-be-build" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 5: ACR Push -->
+        <mxCell id="cd-acr" value="&lt;b&gt;ACR Push&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;az acr build&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="880" y="575" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e-fe-acr" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" source="cd-fe-build" target="cd-acr" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-be-acr" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" source="cd-be-build" target="cd-acr" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 6: Container Apps Deploy -->
+        <mxCell id="cd-ca" value="&lt;b&gt;Container Apps&lt;br&gt;Deploy&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;TF apply + az update&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="570" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="e-acr-ca" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;strokeWidth=2;" edge="1" source="cd-acr" target="cd-ca" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 7: Verify -->
+        <mxCell id="cd-verify" value="&lt;b&gt;Verify&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;snapshot + outputs&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="575" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ca-verify" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=2;" edge="1" source="cd-ca" target="cd-verify" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Column 8: AI Models -->
+        <mxCell id="cd-ai" value="&lt;b&gt;Deploy AI&lt;br&gt;Models&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;optional&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1470" y="575" width="110" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e-verify-ai" value="&lt;font style=&quot;font-size:8px&quot;&gt;if enabled&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#9673a6;strokeWidth=1;dashed=1;" edge="1" source="cd-verify" target="cd-ai" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Skip infra annotation -->
+        <mxCell id="cd-skip" value="&lt;font style=&quot;font-size:8px;color:#999&quot;&gt;skip_infra=true skips this step&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="440" y="640" width="140" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- Environment labels -->
+        <mxCell id="cd-env" value="&lt;font style=&quot;font-size:9px&quot;&gt;&lt;b&gt;Environments:&lt;/b&gt; deploy.yml: main push &amp;nbsp;|&amp;nbsp; deploy-dev-internal.yml: pbmm-dev &amp;nbsp;|&amp;nbsp; deploy-to-pbmm.yml: pbmm-internal&lt;/font&gt;" style="text;html=1;align=left;fontSize=9;fontColor=#666;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="50" y="710" width="700" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="cd-flags" value="&lt;font style=&quot;font-size:9px&quot;&gt;&lt;b&gt;Dispatch flags:&lt;/b&gt; plan | skip_infra | skip_build | skip_container_apps | deploy_ai_models | destroy&lt;/font&gt;" style="text;html=1;align=left;fontSize=9;fontColor=#666;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="50" y="730" width="700" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ================ GENAPP SECTION ================ -->
+        <mxCell id="ga-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#9C27B0;strokeWidth=2;arcSize=4;" vertex="1" parent="1">
+          <mxGeometry x="30" y="800" width="1640" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="ga-title" value="&lt;b&gt;Generated App Pipeline&lt;/b&gt; (genapp-deploy.yml via workflow_dispatch)" style="text;html=1;align=left;fontSize=14;fontColor=#6A1B9A;fontStyle=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="50" y="808" width="500" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- GenApp flow — single horizontal row with generous spacing -->
+        <mxCell id="ga-trigger" value="&lt;b&gt;API Dispatch&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;create / deploy / destroy&lt;/font&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=2;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="60" y="860" width="130" height="55" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ga-token" value="&lt;b&gt;GitHub App&lt;br&gt;Token&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="270" y="865" width="110" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ga-trig-token" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#9673a6;strokeWidth=2;" edge="1" source="ga-trigger" target="ga-token" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ga-checkout" value="&lt;b&gt;Checkout&lt;br&gt;User Repo&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="460" y="865" width="110" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ga-token-co" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#9673a6;strokeWidth=1;" edge="1" source="ga-token" target="ga-checkout" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ga-build" value="&lt;b&gt;ACR Build&lt;br&gt;&amp;amp; Push&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="650" y="865" width="110" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ga-co-build" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=2;" edge="1" source="ga-checkout" target="ga-build" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ga-tf" value="&lt;b&gt;Terraform&lt;br&gt;Apply&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;Container App&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="840" y="855" width="120" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ga-build-tf" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;strokeWidth=2;" edge="1" source="ga-build" target="ga-tf" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ga-destroy" value="&lt;b&gt;Terraform&lt;br&gt;Destroy&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="860" width="110" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ga-tf-destroy" value="&lt;font style=&quot;font-size:8px&quot;&gt;action=destroy&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#b85450;strokeWidth=1;dashed=1;" edge="1" source="ga-tf" target="ga-destroy" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ga-outputs" value="&lt;b&gt;Read Outputs&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:8px&quot;&gt;FQDN / URL&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="865" width="110" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ga-tf-out" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;strokeWidth=1;" edge="1" source="ga-tf" target="ga-outputs" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ga-env" value="&lt;font style=&quot;font-size:9px&quot;&gt;&lt;b&gt;Env:&lt;/b&gt; pbmm-internal &amp;nbsp;|&amp;nbsp; &lt;b&gt;Inputs:&lt;/b&gt; app_id, app_name, resource_group, repo_url, branch, action (create/deploy/destroy)&lt;/font&gt;" style="text;html=1;align=left;fontSize=9;fontColor=#666;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="50" y="930" width="700" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ================ FLOW ARROW between CI and CD sections ================ -->
+        <mxCell id="e-ci-cd" value="&lt;b&gt;merge to main&lt;/b&gt;" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#333;strokeWidth=2;dashed=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" source="ci-pass" target="cd-push" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1130" y="440" />
+              <mxPoint x="110" y="440" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

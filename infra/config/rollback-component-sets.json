@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "componentSets": [
+    {
+      "id": "application-runtime",
+      "displayName": "Application Runtime",
+      "category": "stateless",
+      "owner": "mixed",
+      "destructive": false,
+      "rollbackAfter": [],
+      "requiredPreflightChecks": [
+        "snapshot",
+        "auth",
+        "environment"
+      ],
+      "resources": {
+        "terraformTargets": [
+          "module.container_apps",
+          "module.frontend"
+        ],
+        "scripts": [
+          "infra/scripts/deploy-containers.ps1"
+        ],
+        "containerApps": [
+          "ca-pronghorn-api",
+          "ca-pronghorn-frontend"
+        ],
+        "outputs": [
+          "resource_group_name",
+          "container_registry_login_server",
+          "container_app_url",
+          "frontend_app_url"
+        ]
+      }
+    },
+    {
+      "id": "ai-models",
+      "displayName": "AI Models",
+      "category": "stateless",
+      "owner": "mixed",
+      "destructive": false,
+      "rollbackAfter": [],
+      "requiredPreflightChecks": [
+        "snapshot",
+        "auth",
+        "environment"
+      ],
+      "resources": {
+        "terraformTargets": [
+          "module.ai_foundry[0]"
+        ],
+        "scripts": [
+          "infra/scripts/deploy-models.ps1"
+        ],
+        "outputs": [
+          "resource_group_name",
+          "ai_foundry_endpoint",
+          "ai_foundry_project_name"
+        ]
+      }
+    },
+    {
+      "id": "database",
+      "displayName": "Database",
+      "category": "stateful",
+      "owner": "terraform",
+      "destructive": true,
+      "rollbackAfter": [
+        "application-runtime"
+      ],
+      "requiredPreflightChecks": [
+        "snapshot",
+        "auth",
+        "environment",
+        "service-state",
+        "destructive-ack"
+      ],
+      "resources": {
+        "terraformTargets": [
+          "module.postgresql"
+        ],
+        "scripts": [
+          "infra/scripts/deploy.ps1"
+        ],
+        "outputs": [
+          "resource_group_name",
+          "postgresql_server_name",
+          "postgresql_server_id",
+          "postgresql_database_name"
+        ]
+      }
+    },
+    {
+      "id": "infrastructure",
+      "displayName": "Core Infrastructure",
+      "category": "foundational",
+      "owner": "terraform",
+      "destructive": true,
+      "rollbackAfter": [
+        "application-runtime",
+        "ai-models",
+        "database"
+      ],
+      "requiredPreflightChecks": [
+        "snapshot",
+        "auth",
+        "environment",
+        "destructive-ack"
+      ],
+      "resources": {
+        "terraformTargets": [
+          "module.logging",
+          "module.container_registry",
+          "module.keyvault",
+          "module.storage",
+          "module.api_management",
+          "module.agw"
+        ],
+        "scripts": [
+          "infra/scripts/deploy.ps1"
+        ],
+        "outputs": [
+          "resource_group_name",
+          "apim_gateway_url",
+          "container_registry_login_server",
+          "keyvault_uri",
+          "storage_primary_blob_endpoint"
+        ]
+      }
+    }
+  ]
+}

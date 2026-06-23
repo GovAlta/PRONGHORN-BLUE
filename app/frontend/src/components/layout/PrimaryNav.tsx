@@ -1,0 +1,216 @@
+import { useState } from "react";
+import { Home, Library, Settings, Layers, LogIn, LogOut, Menu, Book, Sun, Moon } from "lucide-react";
+import { NavLink } from "@/components/NavLink";
+import { Button } from "@/components/ui/button";
+import { AdminAccessButton } from "@/components/layout/AdminAccessButton";
+import { PronghornLogo } from "@/components/layout/PronghornLogo";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { useTheme } from "next-themes";
+import { useAuth } from "@/contexts/AuthContext";
+import { useAdmin } from "@/contexts/AdminContext";
+import { useNavigate, Link } from "react-router-dom";
+import { toast } from "sonner";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
+
+export function PrimaryNav() {
+  const { user, signOut } = useAuth();
+  const { isAdmin } = useAdmin();
+  const navigate = useNavigate();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const { theme, setTheme } = useTheme();
+
+  const handleSignOut = async () => {
+    // With Easy Auth, signOut redirects to /.auth/logout
+    // The toast and navigate won't execute as the page will redirect
+    setMobileOpen(false);
+    await signOut();
+    // Note: Code below won't execute with Easy Auth (page redirects)
+    toast.success("Signed out successfully");
+    navigate("/");
+  };
+
+  const handleNavClick = () => {
+    setMobileOpen(false);
+  };
+
+  return (
+    <header className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <div className="flex h-14 items-center px-4 md:px-6">
+        {/* Logo */}
+        <NavLink 
+          to="/" 
+          className="flex items-center gap-2 mr-4 md:mr-8 hover:opacity-80 transition-opacity cursor-pointer"
+        >
+          <div className="rounded-lg">
+            <PronghornLogo className="h-8 w-8" />
+          </div>
+          <span className="font-bold text-xl">Pronghorn</span>
+          <Link to="/terms" className="text-[var(--public-brand)] underline decoration-1 underline-offset-2 text-sm font-medium hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--public-brand)]">(Alpha)</Link>
+        </NavLink>
+
+        {/* Desktop Navigation */}
+        <nav className="hidden md:flex items-center gap-1 flex-1">
+          <NavLink
+            to="/dashboard"
+            className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            activeClassName="bg-muted text-foreground"
+          >
+            <Home className="h-4 w-4" />
+            Dashboard
+          </NavLink>
+          <NavLink
+            to="/standards"
+            className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            activeClassName="bg-muted text-foreground"
+          >
+            <Library className="h-4 w-4" />
+            Standards
+          </NavLink>
+          <NavLink
+            to="/tech-stacks"
+            className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            activeClassName="bg-muted text-foreground"
+          >
+            <Layers className="h-4 w-4" />
+            Tech Stacks
+          </NavLink>
+          <NavLink
+            to="/build-books"
+            className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            activeClassName="bg-muted text-foreground"
+          >
+            <Book className="h-4 w-4" />
+            Build Books
+          </NavLink>
+        </nav>
+
+        {/* Desktop User Menu */}
+        <div className="hidden md:flex items-center gap-2">
+          <ThemeToggle />
+          <AdminAccessButton />
+          {user ? (
+            <>
+              {isAdmin && (
+                <Button variant="ghost" size="icon" asChild>
+                  <NavLink to="/settings/organization">
+                    <Settings className="h-4 w-4" />
+                  </NavLink>
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" onClick={handleSignOut}>
+                <LogOut className="h-4 w-4 mr-2" />
+                Sign Out
+              </Button>
+            </>
+          ) : (
+            <Button variant="default" size="sm" asChild>
+              <NavLink to="/auth">
+                <LogIn className="h-4 w-4 mr-2" />
+                Sign In
+              </NavLink>
+            </Button>
+          )}
+        </div>
+
+        {/* Mobile Menu */}
+        <div className="flex md:hidden items-center gap-1 ml-auto">
+          <AdminAccessButton />
+          <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon">
+                <Menu className="h-5 w-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="right" className="w-[300px]">
+              <SheetHeader>
+                <SheetTitle>Menu</SheetTitle>
+              </SheetHeader>
+              <nav className="flex flex-col gap-2 mt-6">
+                <NavLink
+                  to="/dashboard"
+                  className="flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  activeClassName="bg-muted text-foreground"
+                  onClick={handleNavClick}
+                >
+                  <Home className="h-5 w-5" />
+                  Dashboard
+                </NavLink>
+                <NavLink
+                  to="/standards"
+                  className="flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  activeClassName="bg-muted text-foreground"
+                  onClick={handleNavClick}
+                >
+                  <Library className="h-5 w-5" />
+                  Standards
+                </NavLink>
+                <NavLink
+                  to="/tech-stacks"
+                  className="flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  activeClassName="bg-muted text-foreground"
+                  onClick={handleNavClick}
+                >
+                  <Layers className="h-5 w-5" />
+                  Tech Stacks
+                </NavLink>
+                <NavLink
+                  to="/build-books"
+                  className="flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  activeClassName="bg-muted text-foreground"
+                  onClick={handleNavClick}
+                >
+                  <Book className="h-5 w-5" />
+                  Build Books
+                </NavLink>
+                {user && isAdmin && (
+                  <NavLink
+                    to="/settings/organization"
+                    className="flex items-center gap-3 px-4 py-3 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                    activeClassName="bg-muted text-foreground"
+                    onClick={handleNavClick}
+                  >
+                    <Settings className="h-5 w-5" />
+                    Settings
+                  </NavLink>
+                )}
+                <div className="border-t my-2" />
+                {user ? (
+                  <Button variant="ghost" className="justify-start" onClick={handleSignOut}>
+                    <LogOut className="h-5 w-5 mr-3" />
+                    Sign Out
+                  </Button>
+                ) : (
+                  <Button variant="default" asChild onClick={handleNavClick}>
+                    <NavLink to="/auth" className="flex items-center gap-3">
+                      <LogIn className="h-5 w-5" />
+                      Sign In
+                    </NavLink>
+                  </Button>
+                )}
+                <div className="border-t my-2" />
+                <Button
+                  variant="ghost"
+                  className="justify-start"
+                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                >
+                  {theme === "dark" ? (
+                    <Sun className="h-5 w-5 mr-3" />
+                  ) : (
+                    <Moon className="h-5 w-5 mr-3" />
+                  )}
+                  {theme === "dark" ? "Light Mode" : "Dark Mode"}
+                </Button>
+              </nav>
+            </SheetContent>
+          </Sheet>
+        </div>
+      </div>
+    </header>
+  );
+}

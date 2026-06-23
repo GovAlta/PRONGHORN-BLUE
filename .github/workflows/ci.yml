@@ -1,0 +1,330 @@
+# =============================================================================
+# Pronghorn CI — Pull Request Validation
+# =============================================================================
+# Fast-feedback workflow for pull requests. Runs lint, build, and tests for
+# each layer in parallel, gated by path-based change detection.
+#
+# Infra changes are validated statically (fmt + backend-less validate); no Azure
+# credentials are needed. The real terraform plan runs in platform-deploy.yml.
+#
+# The `ci-gate` job is the single required status check for branch protection.
+# =============================================================================
+
+name: ci
+
+on:
+  pull_request:
+    branches: [dev-internal, pbmm-internal, main, fix/*, feature/*, chore/*]
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - ".github/skills/**"
+      - ".github/instructions/**"
+      - ".github/prompts/**"
+      - ".github/agents/**"
+      - ".vscode/**"
+      # genapp-deploy.yml is workflow_dispatch-only; editing it should not run CI.
+      - ".github/workflows/genapp-deploy.yml"
+      # Genapp terraform modules are only used by the genapp workflow, not platform CI.
+      - "infra/generated-app-template/**"
+      - "infra/modules/generated-app/**"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.event.number }}
+  cancel-in-progress: true
+
+# ---------------------------------------------------------------------------
+# Change detection
+# ---------------------------------------------------------------------------
+jobs:
+  detect-changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+      infra: ${{ steps.filter.outputs.infra }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: paths-filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            frontend:
+              - 'app/frontend/**'
+            backend:
+              - 'app/backend/**'
+            infra:
+              - 'infra/**'
+
+  # ---------------------------------------------------------------------------
+  # Frontend: lint → build → test
+  # ---------------------------------------------------------------------------
+  frontend-ci:
+    name: "Frontend CI"
+    needs: detect-changes
+    if: needs.detect-changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app/frontend
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: install
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: lint
+        run: npm run lint
+
+      - name: build
+        run: npm run build
+
+      - name: test
+        run: npm run test
+
+  # ---------------------------------------------------------------------------
+  # Backend: build → test
+  # ---------------------------------------------------------------------------
+  backend-ci:
+    name: "Backend CI"
+    needs: detect-changes
+    if: needs.detect-changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app/backend
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/backend/package-lock.json
+
+      - name: install
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: build
+        run: npm run build
+
+      - name: test
+        run: npx jest --ci --reporters=default --reporters=github-actions
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure: format check → validate (backend-less; no remote state)
+  #
+  # CI runs on a public runner that cannot reach the PBMM private tfstate, so it
+  # performs only static validation. A real `terraform plan` against remote
+  # state happens in platform-deploy.yml on the self-hosted runner.
+  # ---------------------------------------------------------------------------
+  infra-plan:
+    name: "Infra validate"
+    needs: detect-changes
+    if: needs.detect-changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup-terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: fmt-check
+        run: terraform fmt -check -recursive
+
+      - name: init-backend-false
+        run: terraform init -backend=false
+
+      - name: validate
+        run: terraform validate
+
+  # ---------------------------------------------------------------------------
+  # Security: npm audit
+  # ---------------------------------------------------------------------------
+  security-npm-audit:
+    name: "Security: npm audit"
+    needs: detect-changes
+    if: needs.detect-changes.outputs.frontend == 'true' || needs.detect-changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: audit-frontend
+        working-directory: app/frontend
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+          echo "### Frontend Dependency Audit" >> $GITHUB_STEP_SUMMARY
+          if npm audit --audit-level=critical > /dev/null 2>&1; then
+            echo "No critical vulnerabilities." >> $GITHUB_STEP_SUMMARY
+          else
+            npm audit --json 2>/dev/null | jq -r '
+              "| Severity | Package | Fix Available |",
+              "|----------|---------|---------------|",
+              (.vulnerabilities // {} | to_entries[]
+                | select(.value.severity == "critical" or .value.severity == "high")
+                | "| \(.value.severity) | \(.key) | \(if .value.fixAvailable == true then "Yes" elif .value.fixAvailable == false then "No" else "Partial" end) |")
+            ' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          fi
+
+      - name: audit-backend
+        working-directory: app/backend
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+          echo "### Backend Dependency Audit" >> $GITHUB_STEP_SUMMARY
+          if npm audit --audit-level=critical > /dev/null 2>&1; then
+            echo "No critical vulnerabilities." >> $GITHUB_STEP_SUMMARY
+          else
+            npm audit --json 2>/dev/null | jq -r '
+              "| Severity | Package | Fix Available |",
+              "|----------|---------|---------------|",
+              (.vulnerabilities // {} | to_entries[]
+                | select(.value.severity == "critical" or .value.severity == "high")
+                | "| \(.value.severity) | \(.key) | \(if .value.fixAvailable == true then "Yes" elif .value.fixAvailable == false then "No" else "Partial" end) |")
+            ' >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Security: Gitleaks
+  # ---------------------------------------------------------------------------
+  security-gitleaks:
+    name: "Security: Gitleaks"
+    needs: detect-changes
+    if: needs.detect-changes.outputs.frontend == 'true' || needs.detect-changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: run-gitleaks
+        run: |
+          GITLEAKS_VERSION=$(curl -sSf https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar xz
+          ./gitleaks detect --source=. --config=.gitleaks.toml --verbose --redact --log-opts="${{ github.event.pull_request.base.sha }}..HEAD"
+
+  # ---------------------------------------------------------------------------
+  # Security: Checkov — Terraform IaC scanning
+  # ---------------------------------------------------------------------------
+  security-checkov:
+    name: "Security: Checkov (Terraform)"
+    needs: detect-changes
+    if: needs.detect-changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: run-checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra/
+          framework: terraform
+          quiet: true
+          output_format: github_failed_only
+          # CKV_TF_1: Module source pinning (we pin by version, not commit hash)
+          # CKV_AZURE_233,166,237,164: ACR zone redundancy/quarantine/data endpoints/trust policy — require Premium SKU (env-specific)
+          # CKV_AZURE_136: PostgreSQL geo-redundant backup — disabled in dev, enabled in prod tfvars
+          # CKV_AZURE_109: Key Vault firewall default Allow — open in dev, Deny in prod tfvars
+          # CKV_AZURE_218,120: AGW secure protocols / WAF — AGW uses Standard_v2 SKU in dev (WAF requires WAF_v2)
+          # CKV_AZURE_174: APIM public access — dev uses public, prod uses Internal VNet type
+          # CKV2_AZURE_21: Storage blob read logging — not configured in dev, customer configures via diagnostic_settings in prod
+          # CKV_AZURE_41: Secret expiration — Terraform-managed secrets are overwritten on every apply; expiration creates false alerts
+          # CKV_TF_2: Module source version tag — generated-app-template uses ?ref=main (modules are internal, pinned by branch)
+          # CKV_AZURE_42,110: Key Vault recoverable / purge protection — keyvault_purge_protection_enabled=false in dev (ephemeral vault teardown), true in pbmm (prod) tfvars
+          # CKV_AZURE_112: Key Vault key HSM-backed — requires Premium SKU / managed HSM; dev uses standard SKU
+          # CKV_AZURE_34,CKV2_AZURE_8: Storage container public access — containers are access_type="private" in tfvars; checkov can't resolve the variable-driven value (false positive)
+          skip_check: CKV_TF_1,CKV_TF_2,CKV_AZURE_233,CKV_AZURE_166,CKV_AZURE_237,CKV_AZURE_164,CKV_AZURE_136,CKV_AZURE_109,CKV_AZURE_218,CKV_AZURE_120,CKV_AZURE_174,CKV2_AZURE_21,CKV_AZURE_41,CKV_AZURE_42,CKV_AZURE_110,CKV_AZURE_112,CKV_AZURE_34,CKV2_AZURE_8
+          download_external_modules: true
+
+  # ---------------------------------------------------------------------------
+  # Gate — single required status check for branch protection
+  # ---------------------------------------------------------------------------
+  ci-gate:
+    name: "CI Gate"
+    if: always()
+    needs:
+      [
+        detect-changes,
+        frontend-ci,
+        backend-ci,
+        infra-plan,
+        security-npm-audit,
+        security-gitleaks,
+        security-checkov,
+      ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: evaluate
+        shell: bash
+        run: |
+          echo "frontend changed: ${{ needs.detect-changes.outputs.frontend }}"
+          echo "backend changed:  ${{ needs.detect-changes.outputs.backend }}"
+          echo "infra changed:    ${{ needs.detect-changes.outputs.infra }}"
+          echo ""
+          echo "frontend-ci:        ${{ needs.frontend-ci.result }}"
+          echo "backend-ci:         ${{ needs.backend-ci.result }}"
+          echo "infra-plan:         ${{ needs.infra-plan.result }}"
+          echo "security-npm-audit: ${{ needs.security-npm-audit.result }}"
+          echo "security-gitleaks:  ${{ needs.security-gitleaks.result }}"
+          echo "security-checkov:   ${{ needs.security-checkov.result }}"
+
+          # A job result is 'success', 'failure', 'cancelled', or 'skipped'.
+          # Skipped is acceptable (means the layer had no changes).
+          for result in \
+            "${{ needs.frontend-ci.result }}" \
+            "${{ needs.backend-ci.result }}" \
+            "${{ needs.infra-plan.result }}" \
+            "${{ needs.security-npm-audit.result }}" \
+            "${{ needs.security-gitleaks.result }}" \
+            "${{ needs.security-checkov.result }}"; do
+            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
+              echo "CI failed: a required job returned $result"
+              exit 1
+            fi
+          done
+
+          echo "All CI checks passed."

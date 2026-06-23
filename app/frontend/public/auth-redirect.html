@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Authenticating...</title>
+</head>
+<body>
+  <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+  <script>
+    // This page is used as the redirect target for MSAL popup/redirect flows.
+    // It handles the auth response and closes the popup window.
+    // NOTE: replace the placeholder clientId/tenant below with your own Entra
+    // Application (client) ID and Directory (tenant) ID. These must match the
+    // VITE_ENTRA_* values in app/frontend/.env. See README → "Configuration:
+    // placeholders to replace". (This static file cannot read env at runtime.)
+    const msalConfig = {
+      auth: {
+        clientId: "11111111-1111-1111-1111-111111111111",
+        authority: "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000",
+        navigateToLoginRequestUrl: false,
+      },
+      cache: {
+        cacheLocation: "localStorage",
+      },
+    };
+    const msalInstance = new msal.PublicClientApplication(msalConfig);
+    msalInstance.initialize().then(() => {
+      msalInstance.handleRedirectPromise().then((response) => {
+        // Popup will close automatically after handling the response
+      }).catch((error) => {
+        console.error("Auth redirect error:", error);
+      });
+    });
+  </script>
+</body>
+</html>

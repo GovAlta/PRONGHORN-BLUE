@@ -1,0 +1,40 @@
+{
+  "snapshotId": "dev-rollback-fixture",
+  "environment": "dev",
+  "archetype": "online",
+  "sourceRef": "fixture",
+  "createdAt": "2026-03-27T00:00:00Z",
+  "terraformStateKey": "pronghorn-dev.terraform.tfstate",
+  "componentSets": [
+    { "componentSetId": "application-runtime" },
+    { "componentSetId": "ai-models" },
+    { "componentSetId": "database" },
+    { "componentSetId": "infrastructure" }
+  ],
+  "runtimeArtifacts": {
+    "frontend": {
+      "image": "example.azurecr.io/pronghorn-frontend:dev-42",
+      "revision": "frontend--000042"
+    },
+    "api": {
+      "image": "example.azurecr.io/pronghorn-api:dev-42",
+      "revision": "api--000042"
+    }
+  },
+  "aiDeployments": [
+    {
+      "deploymentName": "grok-3-mini",
+      "modelName": "grok-3-mini",
+      "modelVersion": "1",
+      "modelFormat": "xAI",
+      "skuName": "GlobalStandard",
+      "skuCapacity": 10
+    }
+  ],
+  "outputs": {
+    "resource_group_name": "pronghorn-dev-rg",
+    "postgresql_server_name": "pg-pronghorn-dev",
+    "postgresql_database_name": "pronghorn",
+    "container_registry_login_server": "example.azurecr.io"
+  }
+}

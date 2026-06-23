@@ -1,0 +1,910 @@
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+// Database Explorer component
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { 
+  ResizableHandle, 
+  ResizablePanel, 
+  ResizablePanelGroup 
+} from "@/components/ui/resizable";
+import { Badge } from "@/components/ui/badge";
+import { Database, RefreshCw, Loader2, AlertCircle, Table2, Code, X, ChevronLeft, Bot, Columns, FileUp } from "lucide-react";
+import { pronghornApi } from "@/integrations/pronghorn-api/client";
+import { toast } from "sonner";
+import { DatabaseSchemaTree, Migration } from "./DatabaseSchemaTree";
+import { SqlQueryEditor } from "./SqlQueryEditor";
+import { QueryResultsViewer } from "./QueryResultsViewer";
+import { TableStructureViewer } from "./TableStructureViewer";
+import { SaveQueryDialog } from "./SaveQueryDialog";
+import { TreeItemContextType } from "./DatabaseTreeContextMenu";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { extractDDLStatements } from "@/lib/sqlParser";
+import DatabaseImportWizard from "./DatabaseImportWizard";
+import { DatabaseAgentInterface } from "./DatabaseAgentInterface";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
+interface SchemaInfo {
+  name: string;
+  tables: string[];
+  views: string[];
+  functions: string[];
+  procedures: string[];
+  triggers: { name: string; table: string }[];
+  indexes: { name: string; table: string; definition: string }[];
+  sequences: string[];
+  types: { name: string; type: string }[];
+  constraints: { name: string; table: string; type: string }[];
+}
+
+interface SavedQuery {
+  id: string;
+  name: string;
+  description?: string;
+  sql_content: string;
+}
+
+interface DatabaseExplorerProps {
+  database?: any;
+  externalConnection?: any;
+  shareToken: string | null;
+  onBack?: () => void;
+}
+
+export function DatabaseExplorer({ database, externalConnection, shareToken, onBack }: DatabaseExplorerProps) {
+  const isMobile = useIsMobile();
+  const [schemas, setSchemas] = useState<SchemaInfo[]>([]);
+  const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([]);
+  const [migrations, setMigrations] = useState<Migration[]>([]);
+  const [loadingSchema, setLoadingSchema] = useState(false);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+  
+  const [activeTab, setActiveTab] = useState<"query" | "table" | "structure">("query");
+  const [currentQuery, setCurrentQuery] = useState("SELECT 1;");
+  const [isExecuting, setIsExecuting] = useState(false);
+  
+  // Multi-result support for multiple SQL statements
+  interface SingleQueryResult {
+    columns: string[];
+    rows: any[];
+    executionTime?: number;
+    totalRows?: number;
+  }
+  
+  interface MultiQueryResultItem {
+    statementIndex: number;
+    sql: string;
+    columns: string[];
+    rows: any[];
+    rowCount: number;
+    executionTime: number;
+    error?: string;
+  }
+  
+  const [queryResults, setQueryResults] = useState<{
+    isMultiResult: boolean;
+    single?: SingleQueryResult;
+    multi?: MultiQueryResultItem[];
+    totalExecutionTime?: number;
+  } | null>(null);
+  const [multiResultTab, setMultiResultTab] = useState("0");
+  
+  const [selectedTable, setSelectedTable] = useState<{ schema: string; table: string } | null>(null);
+  const [tableData, setTableData] = useState<{ columns: string[]; rows: any[]; totalRows: number; offset: number; } | null>(null);
+  const [tableStructure, setTableStructure] = useState<{ columns: any[]; indexes: any[] } | null>(null);
+  const [tableLimit] = useState(100);
+  const [loadingTable, setLoadingTable] = useState(false);
+  
+  const [isAgentPanelCollapsed, setIsAgentPanelCollapsed] = useState(true);
+  const [mobileActiveTab, setMobileActiveTab] = useState("schema");
+  
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [editingQuery, setEditingQuery] = useState<SavedQuery | null>(null);
+  const [pendingSqlToSave, setPendingSqlToSave] = useState("");
+  const [importWizardOpen, setImportWizardOpen] = useState(false);
+  
+  // Confirmation dialogs state
+  const [deleteAllMigrationsConfirmOpen, setDeleteAllMigrationsConfirmOpen] = useState(false);
+  const [dropSchemaConfirmOpen, setDropSchemaConfirmOpen] = useState(false);
+  const [pendingDeleteAllMigrations, setPendingDeleteAllMigrations] = useState<Migration[]>([]);
+  const [pendingDropSchema, setPendingDropSchema] = useState<{ name: string; info: any } | null>(null);
+
+  // Determine if we're using a Render database or external connection
+  const isExternal = !!externalConnection;
+  const databaseId = database?.id;
+  const connectionId = externalConnection?.id;
+  const displayName = isExternal ? externalConnection?.name : database?.name;
+
+  const invokeManageDatabase = async (action: string, extraBody: any = {}) => {
+    const body: any = { action, shareToken, ...extraBody };
+    
+    // Use connectionId for external connections, databaseId for Render databases
+    if (isExternal && connectionId) {
+      body.connectionId = connectionId;
+    } else if (databaseId) {
+      body.databaseId = databaseId;
+    }
+    
+    const { data, error } = await pronghornApi.functions.invoke("manage-database", { body });
+    if (error || !data?.success) {
+      throw new Error(data?.error || error?.message || `Failed to ${action}`);
+    }
+    return data.data;
+  };
+
+
+  const initialLoadDone = useRef(false);
+
+  const loadSchema = useCallback(async (silent = false) => {
+    if (!silent) setLoadingSchema(true);
+    setSchemaError(null);
+    try {
+      const result = await invokeManageDatabase("get_schema");
+      const newSchemas = result.schemas || [];
+      // Only update if schemas actually changed (deep compare to prevent remounting)
+      setSchemas(prev => {
+        const prevJson = JSON.stringify(prev);
+        const newJson = JSON.stringify(newSchemas);
+        return prevJson === newJson ? prev : newSchemas;
+      });
+    } catch (error: any) {
+      setSchemaError(error.message);
+      if (!silent) toast.error("Failed to load schema: " + error.message);
+    } finally {
+      setLoadingSchema(false);
+    }
+  }, [databaseId, connectionId, shareToken, isExternal]);
+
+  const loadSavedQueries = useCallback(async () => {
+    // Need either databaseId or connectionId
+    if (!databaseId && !connectionId) return;
+    try {
+      const { data, error } = await pronghornApi.rpc("get_saved_queries_with_token", {
+        p_database_id: databaseId || null,
+        p_connection_id: connectionId || null,
+        p_token: shareToken || null,
+      });
+      if (!error && data) setSavedQueries(data);
+    } catch (error) {
+      console.error("Failed to load saved queries:", error);
+    }
+  }, [databaseId, connectionId, shareToken]);
+
+  const loadMigrations = useCallback(async () => {
+    // Need either databaseId or connectionId
+    if (!databaseId && !connectionId) return;
+    try {
+      const { data, error } = await pronghornApi.rpc("get_migrations_with_token", {
+        p_database_id: databaseId || null,
+        p_connection_id: connectionId || null,
+        p_token: shareToken || null,
+      });
+      if (!error && data) setMigrations(data as Migration[]);
+    } catch (error) {
+      console.error("Failed to load migrations:", error);
+    }
+  }, [databaseId, connectionId, shareToken]);
+
+  useEffect(() => {
+    if (!initialLoadDone.current) {
+      initialLoadDone.current = true;
+      loadSchema();
+      loadSavedQueries();
+      loadMigrations();
+    }
+  }, [loadSchema, loadSavedQueries, loadMigrations]);
+
+  const silentRefresh = useCallback(() => { loadSchema(true); }, [loadSchema]);
+
+  const handleExecuteQuery = async (sql: string) => {
+    setIsExecuting(true);
+    setQueryResults(null);
+    setMultiResultTab("0");
+    try {
+      const result = await invokeManageDatabase("execute_sql", { sql });
+      
+      if (result.isMultiResult) {
+        // Multiple result sets
+        setQueryResults({
+          isMultiResult: true,
+          multi: result.results,
+          totalExecutionTime: result.totalExecutionTime
+        });
+        const successCount = (result.results as MultiQueryResultItem[]).filter((r) => !r.error).length;
+        const totalRows = (result.results as MultiQueryResultItem[]).reduce((sum, r) => sum + r.rowCount, 0);
+        toast.success(`Executed ${result.results.length} queries (${successCount} successful, ${totalRows} total rows)`);
+      } else {
+        // Single result set (backward compatible)
+        setQueryResults({
+          isMultiResult: false,
+          single: {
+            columns: result.columns || [],
+            rows: result.rows || [],
+            executionTime: result.executionTime,
+            totalRows: result.rowCount
+          }
+        });
+        toast.success(`Query executed: ${result.rowCount} rows`);
+      }
+      
+      // Auto-capture DDL statements as migrations (for both Render and external databases)
+      if (databaseId || connectionId) {
+        const ddlStatements = extractDDLStatements(sql);
+        for (const ddl of ddlStatements) {
+          try {
+            await pronghornApi.rpc("insert_migration_with_token", {
+              p_database_id: databaseId || null,
+              p_connection_id: connectionId || null,
+              p_sql_content: ddl.sql,
+              p_statement_type: ddl.statementType,
+              p_object_type: ddl.objectType,
+              p_token: shareToken || null,
+              p_object_schema: ddl.objectSchema || "public",
+              p_object_name: ddl.objectName,
+            });
+            toast.success(`Migration captured: ${ddl.statementType} ${ddl.objectType}${ddl.objectName ? ` ${ddl.objectName}` : ""}`);
+          } catch (e) {
+            console.error("Failed to capture migration:", e);
+          }
+        }
+        if (ddlStatements.length > 0) loadMigrations();
+      }
+      
+      silentRefresh();
+      if (isMobile) setMobileActiveTab("results");
+    } catch (error: any) {
+      toast.error("Query failed: " + error.message);
+      setQueryResults({ 
+        isMultiResult: false, 
+        single: { columns: ["Error"], rows: [{ Error: error.message }] } 
+      });
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  const handleTableSelect = async (schema: string, table: string, offset = 0) => {
+    setSelectedTable({ schema, table });
+    setActiveTab("table");
+    setLoadingTable(true);
+    try {
+      const result = await invokeManageDatabase("get_table_data", { schema, table, limit: tableLimit, offset });
+      const rows = result.rows || [];
+      
+      // If no data returned, fall back to showing table structure
+      if (rows.length === 0 && offset === 0) {
+        setActiveTab("structure");
+        const [colResult, indexResult] = await Promise.all([
+          invokeManageDatabase("get_table_columns", { schema, table }),
+          invokeManageDatabase("get_schema").then(r => {
+            const s = r.schemas?.find((s: any) => s.name === schema);
+            return s?.indexes?.filter((i: any) => i.table === table) || [];
+          }),
+        ]);
+        setTableStructure({ columns: colResult.columns || [], indexes: indexResult });
+        toast.info("Table is empty - showing structure instead");
+      } else {
+        setTableData({ columns: result.columns || [], rows, totalRows: result.totalRows, offset });
+      }
+      if (isMobile) setMobileActiveTab("results");
+    } catch (error: any) {
+      toast.error("Failed to load table data: " + error.message);
+    } finally {
+      setLoadingTable(false);
+    }
+  };
+
+  const handleViewStructure = async (schema: string, table: string) => {
+    setSelectedTable({ schema, table });
+    setActiveTab("structure");
+    setLoadingTable(true);
+    try {
+      const [colResult, indexResult] = await Promise.all([
+        invokeManageDatabase("get_table_columns", { schema, table }),
+        invokeManageDatabase("get_schema").then(r => {
+          const s = r.schemas?.find((s: any) => s.name === schema);
+          return s?.indexes?.filter((i: any) => i.table === table) || [];
+        }),
+      ]);
+      setTableStructure({ columns: colResult.columns || [], indexes: indexResult });
+      if (isMobile) setMobileActiveTab("results");
+    } catch (error: any) {
+      toast.error("Failed to load table structure: " + error.message);
+    } finally {
+      setLoadingTable(false);
+    }
+  };
+
+  const handleShowFirst100 = (schema: string, name: string) => { handleTableSelect(schema, name, 0); };
+
+  const handleGetDefinition = async (type: TreeItemContextType, schema: string, name: string, extra?: any) => {
+    try {
+      const actionMap: Record<string, string> = {
+        "table": "get_table_definition",
+        "view": "get_view_definition",
+        "function": "get_function_definition",
+        "trigger": "get_trigger_definition",
+        "index": "get_index_definition",
+        "sequence": "get_sequence_info",
+        "type": "get_type_definition",
+      };
+
+      const action = actionMap[type];
+      if (!action) {
+        // For constraint, just copy the name
+        if (type === "constraint") {
+          navigator.clipboard.writeText(name);
+          toast.success("Constraint name copied");
+        }
+        return;
+      }
+
+      if (type === "index" && extra?.definition) {
+        // For indexes, we already have the definition from schema
+        setCurrentQuery(extra.definition + ";");
+        navigator.clipboard.writeText(extra.definition + ";");
+        toast.success("Index definition copied and loaded into editor");
+        setActiveTab("query");
+        if (isMobile) setMobileActiveTab("query");
+        return;
+      }
+
+      toast.info(`Fetching ${type} definition...`);
+      const result = await invokeManageDatabase(action, { 
+        schema, 
+        ...(type === "table" ? { table: name } : { name }) 
+      });
+
+      if (result.definition) {
+        setCurrentQuery(result.definition);
+        navigator.clipboard.writeText(result.definition);
+        toast.success(`${type.charAt(0).toUpperCase() + type.slice(1)} definition copied and loaded into editor`);
+        setActiveTab("query");
+        if (isMobile) setMobileActiveTab("query");
+      }
+    } catch (error: any) {
+      toast.error(`Failed to get definition: ${error.message}`);
+      // Fallback to SQL query
+      let sql = "";
+      if (type === "table") sql = `SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = '${schema}' AND table_name = '${name}' ORDER BY ordinal_position;`;
+      else if (type === "view") sql = `SELECT definition FROM pg_views WHERE schemaname = '${schema}' AND viewname = '${name}';`;
+      else if (type === "function") sql = `SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = '${schema}' AND p.proname = '${name}';`;
+      else if (type === "trigger") sql = `SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON t.tgrelid = c.oid JOIN pg_namespace n ON c.relnamespace = n.oid WHERE n.nspname = '${schema}' AND t.tgname = '${name}';`;
+      else if (type === "sequence") sql = `SELECT * FROM "${schema}"."${name}";`;
+      else if (type === "type") sql = `SELECT typname, typtype FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid WHERE n.nspname = '${schema}' AND t.typname = '${name}';`;
+      if (sql) {
+        setCurrentQuery(sql);
+        setActiveTab("query");
+        if (isMobile) setMobileActiveTab("query");
+      }
+    }
+  };
+
+  const handleDropTable = (schema: string, name: string) => {
+    const dropStatement = `DROP TABLE IF EXISTS "${schema}"."${name}" CASCADE;`;
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${dropStatement}` : dropStatement);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.info(`Added DROP TABLE statement for ${schema}.${name}`);
+  };
+
+  // Delete all handlers
+  const handleDropAllTables = (schema: string, tables: string[]) => {
+    const sql = tables.map(t => `DROP TABLE IF EXISTS "${schema}"."${t}" CASCADE;`).join("\n");
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${sql}` : sql);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.info(`Added DROP statements for ${tables.length} tables`);
+  };
+
+  const handleDropAllViews = (schema: string, views: string[]) => {
+    const sql = views.map(v => `DROP VIEW IF EXISTS "${schema}"."${v}" CASCADE;`).join("\n");
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${sql}` : sql);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.info(`Added DROP statements for ${views.length} views`);
+  };
+
+  const handleDropAllFunctions = (schema: string, functions: string[]) => {
+    const sql = functions.map(f => `DROP FUNCTION IF EXISTS "${schema}"."${f}" CASCADE;`).join("\n");
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${sql}` : sql);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.info(`Added DROP statements for ${functions.length} functions`);
+  };
+
+  const handleDropAllTriggers = (schema: string, triggers: { name: string; table: string }[]) => {
+    const sql = triggers.map(t => `DROP TRIGGER IF EXISTS "${t.name}" ON "${schema}"."${t.table}";`).join("\n");
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${sql}` : sql);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.info(`Added DROP statements for ${triggers.length} triggers`);
+  };
+
+  const handleDropAllIndexes = (schema: string, indexes: { name: string; table: string }[]) => {
+    const sql = indexes.map(i => `DROP INDEX IF EXISTS "${schema}"."${i.name}";`).join("\n");
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${sql}` : sql);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.info(`Added DROP statements for ${indexes.length} indexes`);
+  };
+
+  const handleDropAllSequences = (schema: string, sequences: string[]) => {
+    const sql = sequences.map(s => `DROP SEQUENCE IF EXISTS "${schema}"."${s}";`).join("\n");
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${sql}` : sql);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.info(`Added DROP statements for ${sequences.length} sequences`);
+  };
+
+  const handleDropAllTypes = (schema: string, types: { name: string }[]) => {
+    const sql = types.map(t => `DROP TYPE IF EXISTS "${schema}"."${t.name}" CASCADE;`).join("\n");
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${sql}` : sql);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.info(`Added DROP statements for ${types.length} types`);
+  };
+
+  const handleDropAllConstraints = (schema: string, constraints: { name: string; table: string }[]) => {
+    const sql = constraints.map(c => `ALTER TABLE "${schema}"."${c.table}" DROP CONSTRAINT IF EXISTS "${c.name}";`).join("\n");
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${sql}` : sql);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.info(`Added DROP statements for ${constraints.length} constraints`);
+  };
+
+  const handleLoadQuery = (query: SavedQuery) => { setCurrentQuery(query.sql_content); setActiveTab("query"); if (isMobile) setMobileActiveTab("query"); };
+  const handleEditQuery = (query: SavedQuery) => { setEditingQuery(query); setSaveDialogOpen(true); };
+  const handleDeleteQuery = async (query: SavedQuery) => {
+    try {
+      await pronghornApi.rpc("delete_saved_query_with_token", { p_query_id: query.id, p_token: shareToken || null });
+      toast.success("Query deleted");
+      loadSavedQueries();
+    } catch (error: any) { toast.error("Failed to delete: " + error.message); }
+  };
+
+  const handleSaveQuery = async (name: string, description: string, sqlContent: string) => {
+    if (!databaseId && !connectionId) {
+      toast.error("No database selected");
+      return;
+    }
+    try {
+      if (editingQuery) {
+        await pronghornApi.rpc("update_saved_query_with_token", { p_query_id: editingQuery.id, p_token: shareToken || null, p_name: name, p_description: description || null, p_sql_content: sqlContent });
+        toast.success("Query updated");
+      } else {
+        await pronghornApi.rpc("insert_saved_query_with_token", { p_database_id: databaseId || null, p_connection_id: connectionId || null, p_name: name, p_sql_content: sqlContent, p_token: shareToken || null, p_description: description || null });
+        toast.success("Query saved");
+      }
+      loadSavedQueries();
+      setEditingQuery(null);
+    } catch (error: any) { toast.error("Failed to save: " + error.message); throw error; }
+  };
+
+  const handleOpenSaveDialog = (sql: string) => { setPendingSqlToSave(sql); setEditingQuery(null); setSaveDialogOpen(true); };
+
+  const handleLoadMigration = (migration: Migration) => { setCurrentQuery(migration.sql_content); setActiveTab("query"); if (isMobile) setMobileActiveTab("query"); };
+  
+  const handleDeleteMigration = async (migration: Migration) => {
+    try {
+      await pronghornApi.rpc("delete_migration_with_token", { p_migration_id: migration.id, p_token: shareToken || null });
+      toast.success("Migration deleted");
+      loadMigrations();
+    } catch (error: any) { toast.error("Failed to delete: " + error.message); }
+  };
+
+  const handleDownloadMigration = (migration: Migration) => {
+    const filename = `${String(migration.sequence_number).padStart(4, "0")}_${migration.name || "migration"}.sql`;
+    const content = `-- Migration: ${migration.name || "Unnamed"}\n-- Type: ${migration.statement_type} ${migration.object_type}\n-- Executed: ${new Date(migration.executed_at).toISOString()}\n\n${migration.sql_content};`;
+    const blob = new Blob([content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    toast.success(`Downloaded ${filename}`);
+  };
+
+  const handleDownloadAllMigrations = () => {
+    if (migrations.length === 0) return;
+    const content = migrations.map(m => `-- Migration ${m.sequence_number}: ${m.name || "Unnamed"}\n-- Type: ${m.statement_type} ${m.object_type}\n-- Executed: ${new Date(m.executed_at).toISOString()}\n\n${m.sql_content};`).join("\n\n-- ============================================\n\n");
+    const blob = new Blob([content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `migrations_${displayName}.sql`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    toast.success(`Downloaded ${migrations.length} migrations`);
+  };
+
+  // Delete all migrations handler (opens confirmation)
+  const handleDeleteAllMigrationsRequest = (migrationsToDelete: Migration[]) => {
+    setPendingDeleteAllMigrations(migrationsToDelete);
+    setDeleteAllMigrationsConfirmOpen(true);
+  };
+
+  const handleConfirmDeleteAllMigrations = async () => {
+    if (pendingDeleteAllMigrations.length === 0) return;
+    try {
+      for (const migration of pendingDeleteAllMigrations) {
+        await pronghornApi.rpc("delete_migration_with_token", { 
+          p_migration_id: migration.id, 
+          p_token: shareToken || null 
+        });
+      }
+      toast.success(`Deleted ${pendingDeleteAllMigrations.length} migrations`);
+      loadMigrations();
+    } catch (error: any) {
+      toast.error("Failed to delete migrations: " + error.message);
+    } finally {
+      setDeleteAllMigrationsConfirmOpen(false);
+      setPendingDeleteAllMigrations([]);
+    }
+  };
+
+  // Drop all objects in schema handler (opens confirmation)
+  const handleDropSchemaRequest = (schemaName: string, schemaInfo: any) => {
+    setPendingDropSchema({ name: schemaName, info: schemaInfo });
+    setDropSchemaConfirmOpen(true);
+  };
+
+  const handleConfirmDropSchema = () => {
+    if (!pendingDropSchema) return;
+    const s = pendingDropSchema.name;
+    const sql = [
+      `-- Drop all objects in the "${s}" schema of this project database`,
+      "DO $$ DECLARE r RECORD; BEGIN",
+      `  FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = '${s}') LOOP`,
+      `    EXECUTE 'DROP TABLE IF EXISTS "${s}"."' || r.tablename || '" CASCADE';`,
+      "  END LOOP;",
+      `  FOR r IN (SELECT viewname FROM pg_views WHERE schemaname = '${s}') LOOP`,
+      `    EXECUTE 'DROP VIEW IF EXISTS "${s}"."' || r.viewname || '" CASCADE';`,
+      "  END LOOP;",
+      "END $$;",
+    ].join("\n");
+    setCurrentQuery(prev => prev.trim() ? `${prev.trim()}\n\n${sql}` : sql);
+    setActiveTab("query");
+    if (isMobile) setMobileActiveTab("query");
+    toast.warning(`Added DROP ALL OBJECTS statement for "${s}" schema - review and execute manually`);
+    setDropSchemaConfirmOpen(false);
+    setPendingDropSchema(null);
+  };
+
+  const handleExport = async (format: "json" | "csv" | "sql") => {
+    if (!selectedTable) return;
+    try {
+      const result = await invokeManageDatabase("export_table", { schema: selectedTable.schema, table: selectedTable.table, format });
+      const content = format === "json" ? JSON.stringify(result.data, null, 2) : result.data;
+      const blob = new Blob([content], { type: format === "json" ? "application/json" : format === "csv" ? "text/csv" : "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = `${selectedTable.table}.${format}`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+      toast.success(`Exported ${result.rowCount} rows as ${format.toUpperCase()}`);
+    } catch (error: any) { toast.error("Export failed: " + error.message); }
+  };
+
+  const handleExportQueryResults = async (format: "json" | "csv" | "sql") => {
+    if (!queryResults) return;
+    
+    // Get the rows and columns from single or first multi result
+    const rows = queryResults.single?.rows || queryResults.multi?.[0]?.rows || [];
+    const columns = queryResults.single?.columns || queryResults.multi?.[0]?.columns || [];
+    
+    const content = format === "json" ? JSON.stringify(rows, null, 2) : format === "csv" ? [columns.join(","), ...rows.map(row => columns.map(col => JSON.stringify(row[col] ?? "")).join(","))].join("\n") : rows.map(row => `INSERT INTO query_result (${columns.join(", ")}) VALUES (${columns.map(col => { const v = row[col]; return v === null ? "NULL" : typeof v === "string" ? `'${v.replace(/'/g, "''")}'` : v; }).join(", ")});`).join("\n");
+    const blob = new Blob([content], { type: format === "json" ? "application/json" : format === "csv" ? "text/csv" : "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `query_results.${format}`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    toast.success(`Exported ${rows.length} rows as ${format.toUpperCase()}`);
+  };
+
+  const handleCloseTable = () => { setSelectedTable(null); setTableData(null); setTableStructure(null); setActiveTab("query"); };
+
+  // Schema tree panel JSX (inlined to prevent remounting)
+  const schemaTreePanelJsx = (
+    <div className="h-full flex flex-col bg-[#1e1e1e]">
+      <div className="p-2 border-b border-[#3e3e42] bg-[#252526] flex items-center justify-between">
+        <div className="flex items-center gap-2"><Database className="h-4 w-4 text-primary" /><span className="text-sm font-semibold text-[#cccccc]">Schema</span></div>
+        <Button variant="ghost" size="icon" onClick={() => loadSchema()} disabled={loadingSchema} className="h-6 w-6 hover:bg-[#2a2d2e] text-[#cccccc]">
+          {loadingSchema ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+        </Button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {schemaError ? (
+          <div className="flex flex-col items-center justify-center h-full p-4 text-center"><AlertCircle className="h-8 w-8 text-destructive mb-2" /><p className="text-sm text-destructive">{schemaError}</p><Button variant="outline" size="sm" onClick={() => loadSchema()} className="mt-4">Retry</Button></div>
+        ) : (
+          <DatabaseSchemaTree schemas={schemas} savedQueries={savedQueries} migrations={migrations} loading={loadingSchema} onTableSelect={handleTableSelect} onViewSelect={(s, v) => { setCurrentQuery(`SELECT * FROM "${s}"."${v}" LIMIT 100;`); setActiveTab("query"); if (isMobile) setMobileActiveTab("query"); }} onItemClick={(t, s, n, e) => { if (t === "table") handleTableSelect(s, n); }} onShowFirst100={handleShowFirst100} onViewStructure={handleViewStructure} onGetDefinition={handleGetDefinition} onDropTable={handleDropTable} onLoadQuery={handleLoadQuery} onEditQuery={handleEditQuery} onDeleteQuery={handleDeleteQuery} onLoadMigration={handleLoadMigration} onDeleteMigration={handleDeleteMigration} onDownloadMigration={handleDownloadMigration} onDownloadAllMigrations={handleDownloadAllMigrations} onDropAllTables={handleDropAllTables} onDropAllViews={handleDropAllViews} onDropAllFunctions={handleDropAllFunctions} onDropAllTriggers={handleDropAllTriggers} onDropAllIndexes={handleDropAllIndexes} onDropAllSequences={handleDropAllSequences} onDropAllTypes={handleDropAllTypes} onDropAllConstraints={handleDropAllConstraints} onDeleteAllMigrations={handleDeleteAllMigrationsRequest} onDropSchema={handleDropSchemaRequest} />
+        )}
+      </div>
+    </div>
+  );
+
+  // Query editor panel JSX (inlined to prevent remounting)
+  const queryEditorPanelJsx = (
+    <div className="h-full flex flex-col">
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="h-full flex flex-col">
+        <div className="border-b border-border px-2 flex items-center justify-between bg-background">
+          <TabsList className="h-10">
+            <TabsTrigger value="query" className="gap-2 text-xs"><Code className="h-4 w-4" />SQL</TabsTrigger>
+            {selectedTable && activeTab === "table" && (<TabsTrigger value="table" className="gap-2 pr-1 text-xs"><Table2 className="h-4 w-4" /><span className="hidden sm:inline">{`${selectedTable.schema}.${selectedTable.table}`}</span><span className="sm:hidden">{selectedTable.table}</span><button onClick={(e) => { e.stopPropagation(); handleCloseTable(); }} className="ml-1 p-0.5 rounded hover:bg-muted"><X className="h-3 w-3" /></button></TabsTrigger>)}
+            {selectedTable && activeTab === "structure" && (<TabsTrigger value="structure" className="gap-2 pr-1 text-xs"><Columns className="h-4 w-4" />Structure<button onClick={(e) => { e.stopPropagation(); handleCloseTable(); }} className="ml-1 p-0.5 rounded hover:bg-muted"><X className="h-3 w-3" /></button></TabsTrigger>)}
+          </TabsList>
+        </div>
+        <TabsContent value="query" className="flex-1 m-0 min-h-0">
+          {isMobile ? <SqlQueryEditor query={currentQuery} onQueryChange={setCurrentQuery} onExecute={handleExecuteQuery} isExecuting={isExecuting} onSaveQuery={handleOpenSaveDialog} /> : (
+            <ResizablePanelGroup direction="vertical">
+              <ResizablePanel defaultSize={40} minSize={20}><SqlQueryEditor query={currentQuery} onQueryChange={setCurrentQuery} onExecute={handleExecuteQuery} isExecuting={isExecuting} onSaveQuery={handleOpenSaveDialog} /></ResizablePanel>
+              <ResizableHandle withHandle />
+              <ResizablePanel defaultSize={60} minSize={20}>
+                <div className="h-full bg-background">
+                  {queryResults ? (
+                    queryResults.isMultiResult && queryResults.multi && queryResults.multi.length > 1 ? (
+                      // Multiple result sets - show tabbed view
+                      <Tabs value={multiResultTab} onValueChange={setMultiResultTab} className="h-full flex flex-col">
+                        <div className="flex items-center gap-2 px-2 py-1 border-b bg-muted/30">
+                          <div className="flex-1 overflow-x-auto scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent">
+                            <TabsList className="h-8 w-max">
+                              {queryResults.multi.map((result, idx) => (
+                                <TabsTrigger 
+                                  key={idx} 
+                                  value={String(idx)}
+                                  className={`text-xs gap-1 ${result.error ? "text-destructive" : ""}`}
+                                >
+                                  Query {idx + 1}
+                                  <Badge variant="outline" className="ml-1 h-4 px-1 text-[10px]">
+                                    {result.error ? "Error" : `${result.rowCount}`}
+                                  </Badge>
+                                </TabsTrigger>
+                              ))}
+                            </TabsList>
+                          </div>
+                          {queryResults.totalExecutionTime && (
+                            <Badge variant="secondary" className="ml-auto text-xs shrink-0">
+                              Total: {queryResults.totalExecutionTime}ms
+                            </Badge>
+                          )}
+                        </div>
+                        {queryResults.multi.map((result, idx) => (
+                          <TabsContent key={idx} value={String(idx)} className="flex-1 m-0 mt-0 min-h-0 flex flex-col">
+                            <div className="text-xs text-muted-foreground px-2 py-1 font-mono bg-muted/20 border-b truncate">
+                              {result.sql.length > 150 ? result.sql.substring(0, 150) + "..." : result.sql}
+                            </div>
+                            <div className="flex-1 min-h-0">
+                              <QueryResultsViewer
+                                columns={result.columns}
+                                rows={result.rows}
+                                totalRows={result.rowCount}
+                                executionTime={result.executionTime}
+                                onExport={handleExportQueryResults}
+                              />
+                            </div>
+                          </TabsContent>
+                        ))}
+                      </Tabs>
+                    ) : (
+                      // Single result or single-item multi (backward compatible)
+                      <QueryResultsViewer 
+                        columns={queryResults.single?.columns || queryResults.multi?.[0]?.columns || []} 
+                        rows={queryResults.single?.rows || queryResults.multi?.[0]?.rows || []} 
+                        totalRows={queryResults.single?.totalRows || queryResults.multi?.[0]?.rowCount} 
+                        executionTime={queryResults.single?.executionTime || queryResults.multi?.[0]?.executionTime} 
+                        onExport={handleExportQueryResults} 
+                      />
+                    )
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-muted-foreground">
+                      <p className="text-sm">Run a query to see results</p>
+                    </div>
+                  )}
+                </div>
+              </ResizablePanel>
+            </ResizablePanelGroup>
+          )}
+        </TabsContent>
+        <TabsContent value="table" className="flex-1 m-0 min-h-0">{loadingTable ? <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div> : tableData ? <QueryResultsViewer columns={tableData.columns} rows={tableData.rows} totalRows={tableData.totalRows} limit={tableLimit} offset={tableData.offset} onPageChange={(o) => { if (selectedTable) handleTableSelect(selectedTable.schema, selectedTable.table, o); }} onExport={handleExport} /> : <div className="flex items-center justify-center h-full text-muted-foreground"><p className="text-sm">Select a table</p></div>}</TabsContent>
+        <TabsContent value="structure" className="flex-1 m-0 min-h-0">{loadingTable ? <div className="flex items-center justify-center h-full"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div> : tableStructure && selectedTable ? <TableStructureViewer schema={selectedTable.schema} table={selectedTable.table} columns={tableStructure.columns} indexes={tableStructure.indexes} onClose={handleCloseTable} /> : <div className="flex items-center justify-center h-full text-muted-foreground"><p className="text-sm">Select a table to view structure</p></div>}</TabsContent>
+      </Tabs>
+    </div>
+  );
+
+  // Results panel JSX (inlined to prevent remounting) - for mobile view
+  const resultsPanelJsx = (
+    <div className="h-full bg-background">
+      {activeTab === "table" && tableData ? (
+        <QueryResultsViewer 
+          columns={tableData.columns} 
+          rows={tableData.rows} 
+          totalRows={tableData.totalRows} 
+          limit={tableLimit} 
+          offset={tableData.offset} 
+          onPageChange={(o) => { if (selectedTable) handleTableSelect(selectedTable.schema, selectedTable.table, o); }} 
+          onExport={handleExport} 
+        />
+      ) : activeTab === "structure" && tableStructure && selectedTable ? (
+        <TableStructureViewer 
+          schema={selectedTable.schema} 
+          table={selectedTable.table} 
+          columns={tableStructure.columns} 
+          indexes={tableStructure.indexes} 
+        />
+      ) : queryResults ? (
+        queryResults.isMultiResult && queryResults.multi && queryResults.multi.length > 1 ? (
+          // Multiple result sets - show tabbed view
+          <Tabs value={multiResultTab} onValueChange={setMultiResultTab} className="h-full flex flex-col">
+            <div className="flex items-center gap-2 px-2 py-1 border-b bg-muted/30 overflow-x-auto">
+              <TabsList className="h-8">
+                {queryResults.multi.map((result, idx) => (
+                  <TabsTrigger 
+                    key={idx} 
+                    value={String(idx)}
+                    className={`text-xs gap-1 ${result.error ? "text-destructive" : ""}`}
+                  >
+                    Q{idx + 1}
+                    <Badge variant="outline" className="ml-1 h-4 px-1 text-[10px]">
+                      {result.error ? "Err" : result.rowCount}
+                    </Badge>
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+            {queryResults.multi.map((result, idx) => (
+              <TabsContent key={idx} value={String(idx)} className="flex-1 m-0 mt-0 min-h-0 flex flex-col">
+                <div className="text-xs text-muted-foreground px-2 py-1 font-mono bg-muted/20 border-b truncate">
+                  {result.sql.length > 80 ? result.sql.substring(0, 80) + "..." : result.sql}
+                </div>
+                <div className="flex-1 min-h-0">
+                  <QueryResultsViewer
+                    columns={result.columns}
+                    rows={result.rows}
+                    totalRows={result.rowCount}
+                    executionTime={result.executionTime}
+                    onExport={handleExportQueryResults}
+                  />
+                </div>
+              </TabsContent>
+            ))}
+          </Tabs>
+        ) : (
+          // Single result
+          <QueryResultsViewer 
+            columns={queryResults.single?.columns || queryResults.multi?.[0]?.columns || []} 
+            rows={queryResults.single?.rows || queryResults.multi?.[0]?.rows || []} 
+            totalRows={queryResults.single?.totalRows || queryResults.multi?.[0]?.rowCount} 
+            executionTime={queryResults.single?.executionTime || queryResults.multi?.[0]?.executionTime} 
+            onExport={handleExportQueryResults} 
+          />
+        )
+      ) : (
+        <div className="flex items-center justify-center h-full text-muted-foreground">
+          <p className="text-sm">Run a query or select a table to see results</p>
+        </div>
+      )}
+    </div>
+  );
+
+  // Memoized callback handlers for agent panel to prevent remounting
+  const handleSchemaRefresh = useCallback(() => loadSchema(true), [loadSchema]);
+
+  // Agent panel props (memoized to prevent remounting)
+  const agentPanelProps = useMemo(() => ({
+    projectId: database?.project_id || externalConnection?.project_id || "",
+    databaseId,
+    connectionId,
+    shareToken,
+    schemas,
+    onSchemaRefresh: handleSchemaRefresh,
+    onMigrationRefresh: loadMigrations,
+  }), [database?.project_id, externalConnection?.project_id, databaseId, connectionId, shareToken, schemas, handleSchemaRefresh, loadMigrations]);
+
+  if (isMobile) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="p-2 border-b border-border bg-background flex items-center justify-between">
+          <div className="flex items-center gap-2">{onBack && <Button variant="ghost" size="icon" onClick={onBack} className="h-8 w-8"><ChevronLeft className="h-4 w-4" /></Button>}<div className="flex items-center gap-2"><Database className="h-4 w-4 text-primary" /><span className="font-semibold text-sm truncate">{displayName}</span></div></div>
+          <Button variant="ghost" size="icon" onClick={() => setImportWizardOpen(true)} className="h-8 w-8"><FileUp className="h-4 w-4" /></Button>
+        </div>
+        <Tabs value={mobileActiveTab} onValueChange={setMobileActiveTab} className="flex-1 flex flex-col min-h-0">
+          <TabsList className="w-full h-10 rounded-none border-b grid grid-cols-4"><TabsTrigger value="schema" className="text-xs">Schema</TabsTrigger><TabsTrigger value="query" className="text-xs">Query</TabsTrigger><TabsTrigger value="results" className="text-xs">Results</TabsTrigger><TabsTrigger value="agent" className="text-xs">Agent</TabsTrigger></TabsList>
+          <TabsContent value="schema" className="flex-1 m-0 min-h-0" forceMount data-state={mobileActiveTab === "schema" ? "active" : "inactive"}><div className={mobileActiveTab === "schema" ? "h-full" : "hidden"}>{schemaTreePanelJsx}</div></TabsContent>
+          <TabsContent value="query" className="flex-1 m-0 min-h-0" forceMount data-state={mobileActiveTab === "query" ? "active" : "inactive"}><div className={mobileActiveTab === "query" ? "h-full" : "hidden"}><SqlQueryEditor query={currentQuery} onQueryChange={setCurrentQuery} onExecute={handleExecuteQuery} isExecuting={isExecuting} onSaveQuery={handleOpenSaveDialog} /></div></TabsContent>
+          <TabsContent value="results" className="flex-1 m-0 min-h-0" forceMount data-state={mobileActiveTab === "results" ? "active" : "inactive"}><div className={mobileActiveTab === "results" ? "h-full" : "hidden"}>{resultsPanelJsx}</div></TabsContent>
+          <TabsContent value="agent" className="flex-1 m-0 min-h-0" forceMount data-state={mobileActiveTab === "agent" ? "active" : "inactive"}><div className={mobileActiveTab === "agent" ? "h-full" : "hidden"}><DatabaseAgentInterface {...agentPanelProps} /></div></TabsContent>
+        </Tabs>
+        <SaveQueryDialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen} onSave={handleSaveQuery} sqlContent={pendingSqlToSave} editingQuery={editingQuery} />
+        <DatabaseImportWizard
+          open={importWizardOpen}
+          onOpenChange={setImportWizardOpen}
+          databaseId={databaseId}
+          connectionId={connectionId}
+          projectId={database?.project_id || externalConnection?.project_id || ""}
+          shareToken={shareToken}
+          schema="public"
+          existingTables={schemas.flatMap(s => s.tables)}
+          onImportComplete={() => { loadSchema(); loadMigrations(); }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="px-3 py-2 border-b border-border bg-background/95 backdrop-blur flex items-center justify-between">
+        <div className="flex items-center gap-3">{onBack && <Button variant="ghost" size="sm" onClick={onBack} className="h-8"><ChevronLeft className="h-4 w-4 mr-1" />Back</Button>}<div className="flex items-center gap-2"><div className="p-1.5 rounded-md bg-primary/10"><Database className="h-4 w-4 text-primary" /></div><div><h2 className="text-sm font-semibold">{displayName}</h2><p className="text-xs text-muted-foreground">{isExternal ? `External PostgreSQL • ${externalConnection?.host || "Unknown host"}` : `PostgreSQL ${database?.postgres_version || "16"} • ${database?.region || "Unknown"}`}</p></div></div></div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setImportWizardOpen(true)} className="h-8"><FileUp className="h-4 w-4 mr-2" />Import Data</Button>
+          {isAgentPanelCollapsed && <Button variant="outline" size="sm" onClick={() => setIsAgentPanelCollapsed(false)} className="h-8"><Bot className="h-4 w-4 mr-2" />Database Agent</Button>}
+        </div>
+      </div>
+      <div className="flex-1 min-h-0">
+        <ResizablePanelGroup direction="horizontal">
+          <ResizablePanel defaultSize={20} minSize={15} maxSize={35}>{schemaTreePanelJsx}</ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize={isAgentPanelCollapsed ? 80 : 55} minSize={35}>{queryEditorPanelJsx}</ResizablePanel>
+          {!isAgentPanelCollapsed && (<><ResizableHandle withHandle /><ResizablePanel defaultSize={25} minSize={20} maxSize={40}><DatabaseAgentInterface {...agentPanelProps} onCollapse={() => setIsAgentPanelCollapsed(true)} /></ResizablePanel></>)}
+        </ResizablePanelGroup>
+      </div>
+      <SaveQueryDialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen} onSave={handleSaveQuery} sqlContent={pendingSqlToSave} editingQuery={editingQuery} />
+      <DatabaseImportWizard
+        open={importWizardOpen}
+        onOpenChange={setImportWizardOpen}
+        databaseId={databaseId}
+        connectionId={connectionId}
+        projectId={database?.project_id || externalConnection?.project_id || ""}
+        shareToken={shareToken}
+        schema="public"
+        existingTables={schemas.flatMap(s => s.tables)}
+        onImportComplete={() => { loadSchema(); loadMigrations(); }}
+      />
+      
+      {/* Delete All Migrations Confirmation */}
+      <AlertDialog open={deleteAllMigrationsConfirmOpen} onOpenChange={setDeleteAllMigrationsConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete All Migrations?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete {pendingDeleteAllMigrations.length} migration record(s) from the database. 
+              This action cannot be undone. The actual database objects will NOT be affected.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={handleConfirmDeleteAllMigrations}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete All Migrations
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Drop All Objects Confirmation */}
+      <AlertDialog open={dropSchemaConfirmOpen} onOpenChange={setDropSchemaConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Drop All Objects in Schema?</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <p>
+                This will add statements to the query editor that drop all tables and views in the
+                &ldquo;{pendingDropSchema?.name}&rdquo; schema of this project database.
+              </p>
+              <p className="text-destructive font-medium">
+                WARNING: This will delete ALL tables, views, and dependent objects
+                in the &ldquo;{pendingDropSchema?.name}&rdquo; schema when executed!
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={handleConfirmDropSchema}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Add Drop All Objects Statement
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}

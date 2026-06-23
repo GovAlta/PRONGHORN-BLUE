@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pronghorn/specs/001-deployment-rollback/contracts/rollback-record.schema.json",
+  "title": "RollbackExecutionRecord",
+  "type": "object",
+  "required": [
+    "executionId",
+    "planId",
+    "environment",
+    "selectedScopes",
+    "overallStatus",
+    "steps",
+    "startedAt"
+  ],
+  "properties": {
+    "executionId": {
+      "type": "string"
+    },
+    "planId": {
+      "type": "string"
+    },
+    "environment": {
+      "type": "string",
+      "enum": [
+        "dev",
+        "test",
+        "prod"
+      ]
+    },
+    "snapshotId": {
+      "type": "string"
+    },
+    "selectedScopes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": [
+          "infrastructure",
+          "database",
+          "application-runtime",
+          "ai-models"
+        ]
+      }
+    },
+    "overallStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "partially-completed",
+        "blocked",
+        "failed"
+      ]
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finishedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "stepId",
+          "scope",
+          "actionType",
+          "status",
+          "message"
+        ],
+        "properties": {
+          "stepId": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "actionType": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "completed",
+              "skipped",
+              "blocked",
+              "failed"
+            ]
+          },
+          "resourceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "postValidation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "scope",
+          "status",
+          "details"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "warning",
+              "failed"
+            ]
+          },
+          "details": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "followUpActions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

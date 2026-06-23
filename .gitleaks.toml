@@ -1,0 +1,39 @@
+# Gitleaks configuration for Pronghorn.
+# Extends the built-in default ruleset and applies project-specific allowlists.
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+
+title = "Pronghorn gitleaks config"
+
+[extend]
+useDefault = true
+
+# Global allowlists apply to ALL rules (including defaults like generic-api-key).
+# `condition = "AND"` requires both the regex and the path filter to match before
+# a finding is ignored, so the Azurite key is only allowed inside docs/specs.
+[[allowlists]]
+description = "Azurite well-known emulator account key in docs/specs"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+  '''AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==''',
+]
+paths = [
+  '''docs/.*\.md''',
+  '''specs/.*\.md''',
+]
+
+# Public, non-secret Azure identifiers (built-in role definition IDs and the
+# stable namespace GUID used to derive deterministic role-assignment names).
+# These are documented constants, not credentials, so the generic-api-key
+# default rule flags them as false positives.
+[[allowlists]]
+description = "Public Azure built-in role definition / namespace GUIDs"
+regexTarget = "match"
+regexes = [
+  # Key Vault Secrets Officer built-in role
+  '''b86a8fe4-44ce-4948-aff5-9eba01fd6e75''',
+  # Key Vault Secrets User built-in role
+  '''4633458b-17de-408a-b874-0445c86b69e6''',
+  # Stable namespace GUID for deterministic role-assignment names
+  '''1b671a64-40d5-491e-99b0-da01ff1f3341''',
+]

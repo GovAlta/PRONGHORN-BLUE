@@ -1,0 +1,263 @@
+<mxfile host="draw.io">
+  <diagram name="Authentication &amp; Authorization" id="auth-flow">
+    <mxGraphModel dx="1600" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="&lt;b&gt;Pronghorn — Authentication &amp; Authorization Architecture&lt;/b&gt;&lt;br&gt;Three distinct systems: User Auth • GitHub Integration • APIM Gateway" style="text;html=1;align=center;verticalAlign=middle;fontSize=17;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="300" y="15" width="900" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- =============== SECTION 1: USER AUTH =============== -->
+        <mxCell id="user-auth-group" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;strokeWidth=3;arcSize=4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="70" width="730" height="430" as="geometry" />
+        </mxCell>
+        <mxCell id="user-auth-title" value="&lt;b&gt;1. USER AUTHENTICATION&lt;/b&gt; — Establishes Identity (who is the user?)" style="text;html=1;align=left;fontSize=14;fontColor=#0D47A1;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="55" y="78" width="600" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- Entra ID / MSAL Flow (Primary) -->
+        <mxCell id="entra-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;strokeWidth=2;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="55" y="110" width="700" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="entra-label" value="&lt;b&gt;Microsoft Entra ID (Primary — Production)&lt;/b&gt;  MSAL + OIDC + PKCE" style="text;html=1;align=left;fontSize=11;fontColor=#1565C0;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="115" width="500" height="18" as="geometry" />
+        </mxCell>
+
+        <mxCell id="msal-spa" value="&lt;b&gt;MSAL.js&lt;/b&gt;&lt;br&gt;React SPA&lt;br&gt;&lt;font style='font-size:8px'&gt;acquireTokenSilent()&lt;br&gt;→ ID token (not access)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="70" y="140" width="145" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="entra-id" value="&lt;b&gt;Azure AD&lt;/b&gt;&lt;br&gt;Entra ID&lt;br&gt;&lt;font style='font-size:8px'&gt;OIDC / PKCE&lt;br&gt;JWKS keys&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="270" y="140" width="130" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="auth-mw-entra" value="&lt;b&gt;Auth Middleware&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;jwt.verify(token, JWKS)&lt;br&gt;RS256 / v1+v2 issuers&lt;br&gt;aud: CLIENT_ID, api://CLIENT_ID&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="450" y="140" width="175" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="seed-user" value="&lt;b&gt;seedUserIfMissing()&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;INSERT auth.users&lt;br&gt;+ user_roles (admin)&lt;br&gt;Per-process Set cache&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#43A047;strokeWidth=1;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="650" y="145" width="90" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="e-msal-entra" value="PKCE" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1565C0;strokeWidth=2;fontSize=8;fontColor=#666;" edge="1" source="msal-spa" target="entra-id" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-entra-mw" value="ID token" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;strokeWidth=2;fontSize=8;fontColor=#666;" edge="1" source="entra-id" target="auth-mw-entra" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-mw-seed" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#43A047;strokeWidth=1;dashed=1;" edge="1" source="auth-mw-entra" target="seed-user" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Other Identity Providers -->
+        <mxCell id="other-idp-label" value="&lt;b&gt;Alternative Identity Providers&lt;/b&gt; (local development / server-side code flow)" style="text;html=1;align=left;fontSize=11;fontColor=#424242;" vertex="1" parent="1">
+          <mxGeometry x="65" y="270" width="500" height="18" as="geometry" />
+        </mxCell>
+
+        <mxCell id="email-pw" value="&lt;b&gt;Email/Password&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;POST /auth/signup&lt;br&gt;POST /auth/login&lt;br&gt;SHA-256 hash&lt;br&gt;7-day JWT (JWT_SECRET)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;strokeWidth=2;arcSize=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="65" y="295" width="135" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="google-sso" value="&lt;b&gt;Google OAuth&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;GET /auth/oauth/google&lt;br&gt;→ Google authorize&lt;br&gt;→ callback + upsert user&lt;br&gt;→ redirect with JWT&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;strokeWidth=2;arcSize=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="220" y="295" width="155" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="azure-oauth" value="&lt;b&gt;Azure AD OAuth&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;GET /auth/oauth/azure&lt;br&gt;→ Azure authorize&lt;br&gt;→ code exchange + Graph /me&lt;br&gt;→ upsert user + JWT&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;strokeWidth=2;arcSize=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="395" y="295" width="155" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="project-token" value="&lt;b&gt;Project Token&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;URL: /t/:token&lt;br&gt;Anonymous access&lt;br&gt;Owner / Editor / Viewer&lt;br&gt;project_tokens table&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#43A047;strokeWidth=2;arcSize=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="570" y="295" width="135" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- All produce req.user -->
+        <mxCell id="req-user" value="&lt;b&gt;req.user&lt;/b&gt; { id, email, name?, role? }" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFECB3;strokeColor=#FFB300;strokeWidth=2;arcSize=8;shadow=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="400" width="380" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ep-req" style="rounded=1;strokeColor=#FFB300;strokeWidth=1;dashed=1;" edge="1" source="email-pw" target="req-user" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-go-req" style="rounded=1;strokeColor=#FFB300;strokeWidth=1;dashed=1;" edge="1" source="google-sso" target="req-user" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-az-req" style="rounded=1;strokeColor=#FFB300;strokeWidth=1;dashed=1;" edge="1" source="azure-oauth" target="req-user" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-entra-req" style="rounded=1;strokeColor=#FFB300;strokeWidth=1;dashed=1;" edge="1" source="auth-mw-entra" target="req-user" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ws-auth-note" value="&lt;b&gt;WebSocket Auth&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;Same JWT validation&lt;br&gt;on WS handshake&lt;br&gt;?token= or Bearer header&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F7FA;strokeColor=#00838F;strokeWidth=1;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="65" y="400" width="115" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- =============== SECTION 2: GITHUB INTEGRATION =============== -->
+        <mxCell id="gh-group" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#424242;strokeWidth=3;arcSize=4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="530" width="730" height="290" as="geometry" />
+        </mxCell>
+        <mxCell id="gh-title" value="&lt;b&gt;2. GITHUB INTEGRATION&lt;/b&gt; — Service Linking (connect repos, dispatch workflows)" style="text;html=1;align=left;fontSize=14;fontColor=#333;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="55" y="538" width="650" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="gh-note" value="Not an identity provider — links an already-authenticated user to GitHub" style="text;html=1;align=left;fontSize=10;fontColor=#757575;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="55" y="560" width="500" height="16" as="geometry" />
+        </mxCell>
+
+        <!-- OAuth Flow -->
+        <mxCell id="gh-init" value="&lt;b&gt;1. GET /github/auth/url&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;Requires Pronghorn auth&lt;br&gt;HMAC-signed state (userId)&lt;br&gt;HttpOnly cookie for CSRF&lt;br&gt;scope: repo&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666;strokeWidth=2;arcSize=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="65" y="585" width="155" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="gh-github" value="&lt;b&gt;GitHub&lt;/b&gt;&lt;br&gt;OAuth Authorize&lt;br&gt;&lt;font style='font-size:8px'&gt;github.com/login/&lt;br&gt;oauth/authorize&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="270" y="585" width="130" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="gh-callback" value="&lt;b&gt;2. POST /github/auth/callback&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;Verify HMAC state → userId&lt;br&gt;Exchange code → access_token&lt;br&gt;Fetch /user profile&lt;br&gt;Upsert github_user_tokens&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="450" y="585" width="175" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e-gh-init" style="rounded=1;strokeColor=#666;strokeWidth=2;" edge="1" source="gh-init" target="gh-github" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-gh-cb" value="code + state" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;strokeWidth=2;fontSize=8;fontColor=#666;" edge="1" source="gh-github" target="gh-callback" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Token Resolution -->
+        <mxCell id="resolve-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFECB3;strokeColor=#FFB300;strokeWidth=2;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="55" y="690" width="700" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="resolve-title" value="&lt;b&gt;Token Resolution Chain&lt;/b&gt; — resolveGitHubToken() — first non-null wins" style="text;html=1;align=left;fontSize=11;fontColor=#F57F17;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="695" width="500" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="res-1" value="&lt;b&gt;① Per-repo PAT&lt;/b&gt;&lt;br&gt;repo_pats table&lt;br&gt;&lt;font style='font-size:8px'&gt;(skip for default repos)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="75" y="720" width="140" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="res-2" value="&lt;b&gt;② User OAuth&lt;/b&gt;&lt;br&gt;github_user_tokens&lt;br&gt;&lt;font style='font-size:8px'&gt;from OAuth flow above&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="250" y="720" width="150" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="res-3" value="&lt;b&gt;③ System PAT&lt;/b&gt;&lt;br&gt;GITHUB_PAT or&lt;br&gt;GITHUB_TOKEN env" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="435" y="720" width="140" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="res-out" value="&lt;b&gt;GitHub API calls&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;repo ops, workflow dispatch&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="610" y="720" width="130" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="e-r12" value="fallback" style="rounded=1;strokeColor=#999;strokeWidth=1;dashed=1;fontSize=8;fontColor=#999;" edge="1" source="res-1" target="res-2" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-r23" value="fallback" style="rounded=1;strokeColor=#999;strokeWidth=1;dashed=1;fontSize=8;fontColor=#999;" edge="1" source="res-2" target="res-3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-r3o" style="rounded=1;strokeColor=#82b366;strokeWidth=2;" edge="1" source="res-3" target="res-out" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- =============== SECTION 3: APIM INTEGRATION =============== -->
+        <mxCell id="apim-group" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;strokeWidth=3;arcSize=4;" vertex="1" parent="1">
+          <mxGeometry x="810" y="70" width="750" height="750" as="geometry" />
+        </mxCell>
+        <mxCell id="apim-title" value="&lt;b&gt;3. APIM INTEGRATION&lt;/b&gt; — API Gateway Auth (production request flow)" style="text;html=1;align=left;fontSize=14;fontColor=#BF360C;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="825" y="78" width="600" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- Frontend sends request -->
+        <mxCell id="fe-request" value="&lt;b&gt;apiClient (Frontend)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;Authorization: Bearer &amp;lt;idToken&amp;gt;&lt;br&gt;Ocp-Apim-Subscription-Key: &amp;lt;key&amp;gt;&lt;br&gt;Token cached 5 min&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="835" y="110" width="250" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- APIM Inbound Policy -->
+        <mxCell id="apim-policy" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#F57C00;strokeWidth=2;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="835" y="220" width="700" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="apim-policy-title" value="&lt;b&gt;APIM Inbound Policy&lt;/b&gt; (api-management/locals.tf)" style="text;html=1;align=left;fontSize=12;fontColor=#E65100;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="850" y="228" width="400" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="apim-skip" value="&lt;b&gt;Public endpoint?&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;/api-docs, /openapi.json,&lt;br&gt;/health → skip validation&lt;/font&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;strokeWidth=2;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="855" y="260" width="150" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="apim-validate" value="&lt;b&gt;validate-jwt&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;OpenID config from Azure AD&lt;br&gt;aud: CLIENT_ID&lt;br&gt;401 on failure&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;strokeWidth=2;arcSize=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="260" width="155" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="apim-headers" value="&lt;b&gt;Extract Identity Headers&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;X-User-Id ← oid || sub&lt;br&gt;X-User-Email ← preferred_username || email&lt;br&gt;X-User-Name ← name&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1250" y="260" width="260" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-skip-val" value="not public" style="rounded=1;strokeColor=#C62828;strokeWidth=2;fontSize=8;fontColor=#666;" edge="1" source="apim-skip" target="apim-validate" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-val-hdr" style="rounded=1;strokeColor=#82b366;strokeWidth=2;" edge="1" source="apim-validate" target="apim-headers" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Backend Middleware Cascade -->
+        <mxCell id="mw-cascade" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;strokeWidth=2;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="835" y="360" width="700" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="mw-cascade-title" value="&lt;b&gt;Backend Auth Middleware&lt;/b&gt; — Cascading validation (first match wins)" style="text;html=1;align=left;fontSize=11;fontColor=#2E7D32;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="850" y="365" width="500" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="mw-tier1" value="&lt;b&gt;Tier 1: APIM Headers&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;X-User-Id + X-User-Email&lt;br&gt;Trust (already validated)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#43A047;strokeWidth=1;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="850" y="390" width="165" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="mw-tier2" value="&lt;b&gt;Tier 2: Azure AD JWT&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;JWKS validation / RS256&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#43A047;strokeWidth=1;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="390" width="155" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="mw-tier3" value="&lt;b&gt;Tier 3: Local JWT&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;JWT_SECRET (dev)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#43A047;strokeWidth=1;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="390" width="130" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="mw-fail" value="&lt;b&gt;401&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;strokeWidth=1;arcSize=8;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1380" y="395" width="45" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e-t12" value="fail" style="rounded=1;strokeColor=#999;strokeWidth=1;dashed=1;fontSize=7;fontColor=#999;" edge="1" source="mw-tier1" target="mw-tier2" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-t23" value="fail" style="rounded=1;strokeColor=#999;strokeWidth=1;dashed=1;fontSize=7;fontColor=#999;" edge="1" source="mw-tier2" target="mw-tier3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-t3f" value="fail" style="rounded=1;strokeColor=#C62828;strokeWidth=1;dashed=1;fontSize=7;fontColor=#C62828;" edge="1" source="mw-tier3" target="mw-fail" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows from frontend to APIM -->
+        <mxCell id="e-fe-apim" value="HTTPS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#F57C00;strokeWidth=2;fontSize=9;fontColor=#666;" edge="1" source="fe-request" target="apim-skip" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Middleware Variants Box -->
+        <mxCell id="mw-variants" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#9C27B0;strokeWidth=2;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="835" y="470" width="700" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="mw-var-title" value="&lt;b&gt;Middleware Variants &amp; Route Assignment&lt;/b&gt;" style="text;html=1;align=left;fontSize=11;fontColor=#6A1B9A;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="850" y="475" width="350" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="mw-auth" value="&lt;b&gt;authMiddleware&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;401 if no valid token&lt;br&gt;&lt;b&gt;Routes:&lt;/b&gt; chat, projects, artifacts,&lt;br&gt;canvas, database, audit,&lt;br&gt;collaboration, db&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;strokeWidth=1;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="850" y="500" width="195" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="mw-opt" value="&lt;b&gt;optionalAuthMiddleware&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;Pass through if no token&lt;br&gt;&lt;b&gt;Routes:&lt;/b&gt; github, rpc,&lt;br&gt;functions, storage&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#43A047;strokeWidth=1;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="500" width="195" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="mw-role" value="&lt;b&gt;requireRole(role)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;RBAC enforcement&lt;br&gt;403 if insufficient&lt;br&gt;&lt;b&gt;Routes:&lt;/b&gt; admin endpoints&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1BEE7;strokeColor=#8E24AA;strokeWidth=1;arcSize=8;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="500" width="195" height="85" as="geometry" />
+        </mxCell>
+
+        <!-- Data Model Box -->
+        <mxCell id="dm-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;strokeWidth=2;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="835" y="630" width="700" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="dm-title" value="&lt;b&gt;Auth Data Model&lt;/b&gt;" style="text;html=1;align=left;fontSize=11;fontColor=#F57F17;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="850" y="635" width="200" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="dm-users" value="&lt;b&gt;auth.users&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;id, email, encrypted_password&lt;br&gt;raw_user_meta_data, role&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=1;size=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="855" y="660" width="140" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="dm-roles" value="&lt;b&gt;public.user_roles&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;user_id, role&lt;br&gt;(admin/editor/viewer)&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=1;size=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1015" y="660" width="140" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="dm-gh-tokens" value="&lt;b&gt;github_user_tokens&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;user_id → access_token&lt;br&gt;github_username, scopes&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=1;size=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1175" y="660" width="145" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="dm-proj-tokens" value="&lt;b&gt;project_tokens&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;role, label, expiry&lt;br&gt;last_used_at&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=1;size=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="660" width="130" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="dm-pats" value="&lt;b&gt;repo_pats&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;repo_id → pat&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=1;size=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="855" y="730" width="110" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="dm-ott" value="&lt;b&gt;auth.one_time_tokens&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:8px'&gt;FK → auth.users&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=1;size=10;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="985" y="730" width="140" height="45" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

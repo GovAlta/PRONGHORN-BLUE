@@ -1,0 +1,521 @@
+name: "Deploy Generated App"
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_id:
+        description: "Unique app identifier (UUID)"
+        required: true
+        type: string
+      app_name:
+        description: "App display name"
+        required: true
+        type: string
+      resource_group:
+        description: "Resource group name (computed by Pronghorn; must match DB metadata)"
+        required: true
+        type: string
+      repo_url:
+        description: "User GitHub repo (owner/repo format)"
+        required: true
+        type: string
+      branch:
+        description: "Git branch"
+        required: true
+        type: string
+        default: "main"
+      dockerfile_path:
+        description: "Path to Dockerfile in user repo"
+        required: true
+        type: string
+        default: "Dockerfile"
+      environment:
+        description: "Deployment environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - uat
+          - prod
+        default: dev
+      action:
+        description: "Deployment action"
+        required: true
+        type: choice
+        options:
+          - create
+          - deploy
+          - destroy
+      key_vault_name:
+        description: "Per-deployment Azure Key Vault name holding env-var / secret values"
+        required: false
+        type: string
+        default: ""
+      key_vault_resource_group:
+        description: "Resource group that contains the per-deployment Key Vault"
+        required: false
+        type: string
+        default: ""
+      port:
+        description: "Container port the app listens on"
+        required: false
+        type: string
+        default: "80"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: genapp-${{ inputs.app_id }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  ARM_USE_OIDC: "true"
+  # Azure identity (AZURE_*/ARM_*) and the tfstate backend (TFSTATE_*) come from
+  # the deploy environment's GitHub Environment Variables (environment ==
+  # inputs.environment); the platform resource group and workload ACA env name
+  # are read from the committed infra/params/<environment>.tfvars. The GitHub App
+  # identity used to clone user repos is read from the platform Key Vault.
+  TFVARS_FILE: params/${{ inputs.environment }}.tfvars
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Build Docker image and push to shared ACR
+  #
+  # Runs first (for create/deploy) so the freshly built image reference can be
+  # handed to Terraform, which is the single authority for the Container App's
+  # image AND its Key Vault secret/env wiring. This guarantees added/removed
+  # env-var keys reach the running container on every deploy, in one revision.
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: "Build & Push Image"
+    # PBMM: run on the self-hosted runner inside the VNet. The platform ACR has
+    # publicNetworkAccess=Disabled, so the image must be pushed over its private
+    # endpoint; a public GitHub-hosted runner cannot reach it. Matches
+    # platform-deploy.yml.
+    runs-on: [self-hosted, linux, pbmm]
+    timeout-minutes: 20
+    # Bind to the GitHub Environment named after the deploy target so the Azure
+    # identity Variables (SUBSCRIPTION_ID/AZURE_CLIENT_ID/AZURE_TENANT_ID) resolve
+    # and the OIDC token subject is repo:<org>/pronghorn:environment:<env>.
+    environment: ${{ inputs.environment }}
+    if: ${{ inputs.action == 'create' || inputs.action == 'deploy' }}
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+      image_tag: ${{ steps.build.outputs.image_tag }}
+    steps:
+      # Split "owner/repo" into parts. GitHub Actions expressions have no
+      # split() function, so parse with bash and expose as step outputs.
+      - name: Parse repo owner/name
+        id: repo
+        shell: bash
+        env:
+          REPO_URL: ${{ inputs.repo_url }}
+        run: |
+          set -euo pipefail
+          echo "owner=${REPO_URL%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${REPO_URL##*/}" >> "$GITHUB_OUTPUT"
+
+      # Mint a scoped installation token for the phb-user-app-deploy GitHub App.
+      # The default GITHUB_TOKEN only has access to this (pronghorn) repo, so it
+      # cannot clone the user's app repo in another org (404 "Repository not found").
+      # The GitHub App identity (id + private key) is read from the platform Key
+      # Vault, where it is seeded by Terraform and set by the customer
+      # out-of-band. Checking out pronghorn config here gives us the Azure
+      # identity + platform resource group to reach that Key Vault.
+      - name: Checkout pronghorn config
+        uses: actions/checkout@v4
+        with:
+          path: _platform
+
+      - name: Parse deployment config
+        id: cfg
+        shell: bash
+        env:
+          # Azure login identity comes from the GitHub Environment Variables
+          # (environment == inputs.environment), not from the committed tfvars.
+          VAR_SUBSCRIPTION_ID: ${{ vars.SUBSCRIPTION_ID }}
+          VAR_AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          VAR_AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          TFVARS_PATH="_platform/infra/${TFVARS_FILE}"
+          if [ ! -f "${TFVARS_PATH}" ]; then
+            echo "::error::Missing required tfvars file: ${TFVARS_PATH}"
+            exit 1
+          fi
+          hcl() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$2" | tail -n 1; }
+
+          # Azure login identity — sourced from the GitHub Environment Variables.
+          SUB="${VAR_SUBSCRIPTION_ID}"
+          CLIENT="${VAR_AZURE_CLIENT_ID}"
+          TENANT="${VAR_AZURE_TENANT_ID}"
+          PROJECT="$(hcl project_name "$TFVARS_PATH")"
+          PLATFORM_RG="$(hcl platform_resource_group_name "$TFVARS_PATH")"
+
+          missing=()
+          [ -n "$SUB" ] || missing+=("SUBSCRIPTION_ID (GitHub environment variable)")
+          [ -n "$CLIENT" ] || missing+=("AZURE_CLIENT_ID (GitHub environment variable)")
+          [ -n "$TENANT" ] || missing+=("AZURE_TENANT_ID (GitHub environment variable)")
+          [ -n "$PROJECT" ] || missing+=("project_name")
+          [ -n "$PLATFORM_RG" ] || missing+=("platform_resource_group_name")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required tfvars values: ${missing[*]}"
+            exit 1
+          fi
+
+          {
+            echo "AZURE_CLIENT_ID=${CLIENT}"
+            echo "AZURE_TENANT_ID=${TENANT}"
+            echo "AZURE_SUBSCRIPTION_ID=${SUB}"
+            echo "ARM_CLIENT_ID=${CLIENT}"
+            echo "ARM_TENANT_ID=${TENANT}"
+            echo "ARM_SUBSCRIPTION_ID=${SUB}"
+            echo "PROJECT_NAME=${PROJECT}"
+            echo "PLATFORM_RESOURCE_GROUP=${PLATFORM_RG}"
+          } >> "$GITHUB_ENV"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      # Fetch the GitHub App id + private key from the platform Key Vault over its
+      # private endpoint. The vault name carries a random suffix, so discover it
+      # by its kv-<project>- prefix within the platform resource group.
+      - name: Fetch GitHub App credentials from Key Vault
+        id: ghapp
+        shell: bash
+        run: |
+          set -euo pipefail
+          KV_NAME=$(az keyvault list -g "$PLATFORM_RESOURCE_GROUP" \
+            --query "[?starts_with(name, 'kv-${PROJECT_NAME}')].name | [0]" -o tsv)
+          if [ -z "$KV_NAME" ] || [ "$KV_NAME" == "None" ]; then
+            echo "::error::Platform Key Vault (kv-${PROJECT_NAME}-*) not found in '$PLATFORM_RESOURCE_GROUP'"
+            exit 1
+          fi
+          echo "Using platform Key Vault: $KV_NAME"
+
+          APP_ID="$(az keyvault secret show --vault-name "$KV_NAME" --name github-app-id --query value -o tsv)"
+          PRIVATE_KEY="$(az keyvault secret show --vault-name "$KV_NAME" --name github-app-private-key --query value -o tsv)"
+          if [ -z "$APP_ID" ] || [ "$APP_ID" == "REPLACE_VIA_KEY_VAULT" ]; then
+            echo "::error::Secret 'github-app-id' is not set in '$KV_NAME'. Set it with 'az keyvault secret set'."
+            exit 1
+          fi
+          if [ -z "$PRIVATE_KEY" ] || [ "$PRIVATE_KEY" == "REPLACE_VIA_KEY_VAULT" ]; then
+            echo "::error::Secret 'github-app-private-key' is not set in '$KV_NAME'. Set it with 'az keyvault secret set'."
+            exit 1
+          fi
+
+          echo "::add-mask::$APP_ID"
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$PRIVATE_KEY"
+
+          {
+            echo "app_id=${APP_ID}"
+            echo "private_key<<__PEM_EOF__"
+            echo "${PRIVATE_KEY}"
+            echo "__PEM_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ steps.ghapp.outputs.app_id }}
+          private-key: ${{ steps.ghapp.outputs.private_key }}
+          owner: ${{ steps.repo.outputs.owner }}
+          repositories: ${{ steps.repo.outputs.name }}
+
+      - name: Checkout user repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo_url }}
+          ref: ${{ inputs.branch }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: _app
+
+      - name: Build and push image
+        id: build
+        shell: bash
+        working-directory: _app
+        env:
+          APP_NAME_RAW: ${{ inputs.app_name }}
+          DOCKERFILE: ${{ inputs.dockerfile_path }}
+        run: |
+          set -euo pipefail
+          # Sanitize app name to prevent injection
+          APP_NAME_SAFE=$(echo "$APP_NAME_RAW" | tr -cd 'a-z0-9-' | head -c 32)
+          ACR_NAME=$(az acr list -g "$PLATFORM_RESOURCE_GROUP" --query "[0].name" -o tsv)
+          ACR_SERVER=$(az acr list -g "$PLATFORM_RESOURCE_GROUP" --query "[0].loginServer" -o tsv)
+          IMAGE_TAG="${{ github.run_id }}"
+          IMAGE="${ACR_SERVER}/${APP_NAME_SAFE}:${IMAGE_TAG}"
+
+          az acr login --name "$ACR_NAME"
+          docker build -t "$IMAGE" -f "$DOCKERFILE" .
+          docker push "$IMAGE"
+
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Pushed image: ${IMAGE}"
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Terraform — create/deploy (apply) or destroy infrastructure
+  #
+  # For create/deploy this consumes the image built above and applies the full
+  # desired state: container image + Key Vault secret/env wiring. Because
+  # Terraform owns the image, env-var key additions/removals and value changes
+  # all land in a single new revision. For destroy it runs independently (the
+  # build job is skipped).
+  # ---------------------------------------------------------------------------
+  deploy-infra:
+    name: "Terraform ${{ inputs.action }}"
+    needs: [build-and-push]
+    if: ${{ always() && (inputs.action == 'destroy' || ((inputs.action == 'create' || inputs.action == 'deploy') && needs.build-and-push.result == 'success')) }}
+    # PBMM: run on the self-hosted runner inside the VNet so Terraform reaches
+    # the tfstate storage account, ACR, and Key Vault through their private
+    # endpoints. Matches platform-deploy.yml.
+    runs-on: [self-hosted, linux, pbmm]
+    timeout-minutes: 30
+    # Bind to the GitHub Environment named after the deploy target so the Azure
+    # identity Variables (SUBSCRIPTION_ID/AZURE_CLIENT_ID/AZURE_TENANT_ID) resolve
+    # and the OIDC token subject is repo:<org>/pronghorn:environment:<env>.
+    environment: ${{ inputs.environment }}
+    outputs:
+      fqdn: ${{ steps.tfout.outputs.fqdn }}
+      resource_group: ${{ steps.tfout.outputs.resource_group }}
+      container_app_name: ${{ steps.tfout.outputs.container_app_name }}
+    steps:
+      # Terraform for generated apps lives in THIS (pronghorn) repo under
+      # infra/generated-app-template. The user's source repo is only needed for
+      # the image build in the build-and-push job, so check out pronghorn here.
+      - name: Checkout pronghorn repo
+        uses: actions/checkout@v4
+
+      - name: Parse deployment config
+        id: cfg
+        shell: bash
+        env:
+          # Azure login identity and the tfstate backend come from the deploy
+          # environment's GitHub Environment Variables (environment ==
+          # inputs.environment), not from committed files.
+          VAR_SUBSCRIPTION_ID: ${{ vars.SUBSCRIPTION_ID }}
+          VAR_AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          VAR_AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          VAR_TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          VAR_TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          VAR_TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+        run: |
+          set -euo pipefail
+          TFVARS_PATH="infra/${TFVARS_FILE}"
+          if [ ! -f "${TFVARS_PATH}" ]; then
+            echo "::error::Missing required tfvars file: ${TFVARS_PATH}"
+            exit 1
+          fi
+          hcl() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$2" | tail -n 1; }
+
+          # Azure login identity — sourced from the GitHub Environment Variables.
+          SUB="${VAR_SUBSCRIPTION_ID}"
+          CLIENT="${VAR_AZURE_CLIENT_ID}"
+          TENANT="${VAR_AZURE_TENANT_ID}"
+          # Platform values — sourced from the committed tfvars.
+          PLATFORM_RG="$(hcl platform_resource_group_name "$TFVARS_PATH")"
+          WORKLOAD_ENV="$(hcl workload_aca_environment_name "$TFVARS_PATH")"
+          # tfstate backend — sourced from the GitHub Environment Variables.
+          RG="${VAR_TFSTATE_RESOURCE_GROUP}"
+          SA="${VAR_TFSTATE_STORAGE_ACCOUNT}"
+          CONTAINER="${VAR_TFSTATE_CONTAINER}"
+
+          missing=()
+          [ -n "$SUB" ] || missing+=("SUBSCRIPTION_ID (GitHub environment variable)")
+          [ -n "$CLIENT" ] || missing+=("AZURE_CLIENT_ID (GitHub environment variable)")
+          [ -n "$TENANT" ] || missing+=("AZURE_TENANT_ID (GitHub environment variable)")
+          [ -n "$PLATFORM_RG" ] || missing+=("platform_resource_group_name (tfvars)")
+          [ -n "$WORKLOAD_ENV" ] || missing+=("workload_aca_environment_name (tfvars)")
+          [ -n "$RG" ] || missing+=("TFSTATE_RESOURCE_GROUP (GitHub environment variable)")
+          [ -n "$SA" ] || missing+=("TFSTATE_STORAGE_ACCOUNT (GitHub environment variable)")
+          [ -n "$CONTAINER" ] || missing+=("TFSTATE_CONTAINER (GitHub environment variable)")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required deployment config values: ${missing[*]}"
+            exit 1
+          fi
+
+          {
+            echo "AZURE_CLIENT_ID=${CLIENT}"
+            echo "AZURE_TENANT_ID=${TENANT}"
+            echo "AZURE_SUBSCRIPTION_ID=${SUB}"
+            echo "ARM_CLIENT_ID=${CLIENT}"
+            echo "ARM_TENANT_ID=${TENANT}"
+            echo "ARM_SUBSCRIPTION_ID=${SUB}"
+            echo "PLATFORM_RESOURCE_GROUP=${PLATFORM_RG}"
+            echo "WORKLOAD_ACA_ENVIRONMENT_NAME=${WORKLOAD_ENV}"
+            echo "TFSTATE_RESOURCE_GROUP=${RG}"
+            echo "TFSTATE_STORAGE_ACCOUNT=${SA}"
+            echo "TFSTATE_CONTAINER=${CONTAINER}"
+          } >> "$GITHUB_ENV"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # NOTE: PBMM has NO open/close public-network steps. The self-hosted runner
+      # runs inside the VNet and reaches the tfstate storage account, ACR, and
+      # Key Vault through their private endpoints. Mirrors platform-deploy.yml.
+
+      - name: Terraform init
+        working-directory: infra/generated-app-template
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Backend identifiers come from the GitHub Environment Variables;
+          # the genapp state key is per-app, so it overrides the env var `key`.
+          terraform init -reconfigure \
+            -backend-config="resource_group_name=${TFSTATE_RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${TFSTATE_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${TFSTATE_CONTAINER}" \
+            -backend-config="use_azuread_auth=true" \
+            -backend-config="key=genapp/${{ inputs.app_id }}.tfstate"
+
+      - name: Resolve shared infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLATFORM_RG="$PLATFORM_RESOURCE_GROUP"
+          if [[ -z "$PLATFORM_RG" ]]; then
+            echo "::error::platform_resource_group_name was not resolved from the tfvars file."
+            exit 1
+          fi
+
+          echo "Discovering ACR in '$PLATFORM_RG'..."
+          ACR_JSON=$(az acr list -g "$PLATFORM_RG" --query "[0].{id:id, name:name, loginServer:loginServer}" -o json)
+          ACR_ID=$(echo "$ACR_JSON" | jq -r '.id')
+          ACR_NAME=$(echo "$ACR_JSON" | jq -r '.name')
+          ACR_LOGIN_SERVER=$(echo "$ACR_JSON" | jq -r '.loginServer')
+          if [[ -z "$ACR_ID" || "$ACR_ID" == "null" ]]; then
+            echo "::error::No Container Registry found in resource group '$PLATFORM_RG'"
+            exit 1
+          fi
+          echo "  ACR=$ACR_NAME ($ACR_LOGIN_SERVER)"
+
+          # Generated apps MUST land in the dedicated workload Container App
+          # Environment, NOT the platform control-plane environment. When the
+          # platform and workload environments share a resource group, a
+          # positional "[0]" pick is non-deterministic and can resolve to the
+          # platform environment, so the workload environment is selected
+          # explicitly by name.
+          WORKLOAD_ENV_NAME="$WORKLOAD_ACA_ENVIRONMENT_NAME"
+          if [[ -z "$WORKLOAD_ENV_NAME" ]]; then
+            echo "::error::workload_aca_environment_name was not resolved from the tfvars file."
+            exit 1
+          fi
+
+          echo "Resolving workload Container App Environment '$WORKLOAD_ENV_NAME' in '$PLATFORM_RG'..."
+          WORKLOAD_ENVIRONMENT_ID=$(az containerapp env show -g "$PLATFORM_RG" -n "$WORKLOAD_ENV_NAME" --query id -o tsv 2>/dev/null || true)
+          if [[ -z "$WORKLOAD_ENVIRONMENT_ID" || "$WORKLOAD_ENVIRONMENT_ID" == "None" ]]; then
+            echo "::error::Workload Container App Environment '$WORKLOAD_ENV_NAME' not found in resource group '$PLATFORM_RG'"
+            exit 1
+          fi
+          echo "  WORKLOAD_ENVIRONMENT_ID=$WORKLOAD_ENVIRONMENT_ID"
+
+          echo "ACR_ID=$ACR_ID" >> "$GITHUB_ENV"
+          echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
+          echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
+          echo "WORKLOAD_ENVIRONMENT_ID=$WORKLOAD_ENVIRONMENT_ID" >> "$GITHUB_ENV"
+
+          echo "Inheriting compliance tags from platform resource group..."
+          COMPLIANCE_TAGS=$(az group show -n "$PLATFORM_RG" --query tags -o json 2>/dev/null \
+            | jq -c 'with_entries(select(.key | test("^(ClientOrganization|CostCenter|DataSensitivity|ProjectContact|ProjectName|TechnicalContact)$")))' 2>/dev/null || echo '{}')
+          echo "  COMPLIANCE_TAGS=$COMPLIANCE_TAGS"
+          echo "COMPLIANCE_TAGS=$COMPLIANCE_TAGS" >> "$GITHUB_ENV"
+
+          echo "[OK] All shared infrastructure resolved."
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT="${{ inputs.port }}"
+          if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+            echo "::error::Invalid port '$PORT'. Must be a number between 1 and 65535."
+            exit 1
+          fi
+
+      - name: Terraform destroy
+        if: ${{ inputs.action == 'destroy' }}
+        working-directory: infra/generated-app-template
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$COMPLIANCE_TAGS" | jq '{compliance_tags: .}' > compliance_tags.auto.tfvars.json
+          terraform destroy -auto-approve \
+            -var="subscription_id=${ARM_SUBSCRIPTION_ID}" \
+            -var="app_id=${{ inputs.app_id }}" \
+            -var="app_name=${{ inputs.app_name }}" \
+            -var="resource_group=${{ inputs.resource_group }}" \
+            -var="environment=${{ inputs.environment }}" \
+            -var="image_name=${{ inputs.app_name }}" \
+            -var="acr_id=${ACR_ID}" \
+            -var="acr_login_server=${ACR_LOGIN_SERVER}" \
+            -var="container_app_environment_id=${WORKLOAD_ENVIRONMENT_ID}" \
+            -var="target_port=${{ inputs.port }}"
+
+      - name: Cleanup Terraform state
+        if: ${{ inputs.action == 'destroy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Cleaning up state file: genapp/${{ inputs.app_id }}.tfstate"
+          az storage blob delete \
+            --account-name "${TFSTATE_STORAGE_ACCOUNT}" \
+            --container-name "${TFSTATE_CONTAINER}" \
+            --name "genapp/${{ inputs.app_id }}.tfstate" \
+            --auth-mode login || true
+
+      - name: Terraform apply
+        if: ${{ inputs.action == 'create' || inputs.action == 'deploy' }}
+        working-directory: infra/generated-app-template
+        shell: bash
+        run: |
+          set -euo pipefail
+          # User env vars + secrets live in the per-deployment Key Vault; Terraform
+          # reads them from there via the key_vault_name input. Nothing sensitive
+          # is materialized on the command line or in HCL. Terraform also owns the
+          # container image (built in the prior job) so a single apply re-wires KV
+          # secrets/env AND rolls the image into one new revision.
+          printf '%s' "$COMPLIANCE_TAGS" | jq '{compliance_tags: .}' > compliance_tags.auto.tfvars.json
+          terraform apply -auto-approve \
+            -var="subscription_id=${ARM_SUBSCRIPTION_ID}" \
+            -var="app_id=${{ inputs.app_id }}" \
+            -var="app_name=${{ inputs.app_name }}" \
+            -var="resource_group=${{ inputs.resource_group }}" \
+            -var="environment=${{ inputs.environment }}" \
+            -var="image_name=${{ inputs.app_name }}" \
+            -var="image=${{ needs.build-and-push.outputs.image }}" \
+            -var="acr_id=${ACR_ID}" \
+            -var="acr_login_server=${ACR_LOGIN_SERVER}" \
+            -var="container_app_environment_id=${WORKLOAD_ENVIRONMENT_ID}" \
+            -var="key_vault_name=${{ inputs.key_vault_name }}" \
+            -var="key_vault_resource_group=${{ inputs.key_vault_resource_group }}" \
+            -var="target_port=${{ inputs.port }}"
+
+      - name: Read Terraform outputs
+        if: ${{ inputs.action == 'create' || inputs.action == 'deploy' }}
+        id: tfout
+        working-directory: infra/generated-app-template
+        shell: bash
+        run: |
+          echo "fqdn=$(terraform output -raw fqdn)" >> "$GITHUB_OUTPUT"
+          echo "resource_group=$(terraform output -raw resource_group)" >> "$GITHUB_OUTPUT"
+          echo "container_app_name=$(terraform output -raw container_app_name)" >> "$GITHUB_OUTPUT"

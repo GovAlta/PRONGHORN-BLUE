@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "AI Model Deployment Configuration for Azure AI Foundry",
+  "models": [
+    {
+      "deploymentName": "gpt-4-1",
+      "modelName": "gpt-4.1",
+      "modelVersion": "2025-04-14",
+      "modelFormat": "OpenAI",
+      "skuName": "GlobalStandard",
+      "skuCapacity": 20,
+      "raiPolicyName": "Microsoft.Default",
+      "versionUpgradeOption": "OnceCurrentVersionExpired",
+      "description": "OpenAI GPT-4.1 - Best for coding, instruction following, and long contexts",
+      "enabled": true
+    },
+    {
+      "deploymentName": "gpt-4-1-mini",
+      "modelName": "gpt-4.1-mini",
+      "modelVersion": "2025-04-14",
+      "modelFormat": "OpenAI",
+      "skuName": "GlobalStandard",
+      "skuCapacity": 50,
+      "raiPolicyName": "Microsoft.Default",
+      "versionUpgradeOption": "OnceCurrentVersionExpired",
+      "description": "OpenAI GPT-4.1-mini - Cost-effective for most tasks",
+      "enabled": true
+    },
+    {
+      "deploymentName": "o3",
+      "modelName": "o3",
+      "modelVersion": "2025-04-16",
+      "modelFormat": "OpenAI",
+      "skuName": "GlobalStandard",
+      "skuCapacity": 10,
+      "raiPolicyName": "Microsoft.Default",
+      "versionUpgradeOption": "OnceCurrentVersionExpired",
+      "description": "OpenAI o3 - Advanced reasoning for complex problems",
+      "enabled": true
+    },
+    {
+      "deploymentName": "o4-mini",
+      "modelName": "o4-mini",
+      "modelVersion": "2025-04-16",
+      "modelFormat": "OpenAI",
+      "skuName": "GlobalStandard",
+      "skuCapacity": 20,
+      "raiPolicyName": "Microsoft.Default",
+      "versionUpgradeOption": "OnceCurrentVersionExpired",
+      "description": "OpenAI o4-mini - Efficient reasoning model",
+      "enabled": true
+    },
+    {
+      "deploymentName": "gpt-4o",
+      "modelName": "gpt-4o",
+      "modelVersion": "2024-11-20",
+      "modelFormat": "OpenAI",
+      "skuName": "GlobalStandard",
+      "skuCapacity": 30,
+      "raiPolicyName": "Microsoft.Default",
+      "versionUpgradeOption": "OnceCurrentVersionExpired",
+      "description": "OpenAI GPT-4o - Multimodal model for text and images",
+      "enabled": true
+    },
+    {
+      "deploymentName": "gpt-4o-mini",
+      "modelName": "gpt-4o-mini",
+      "modelVersion": "2024-07-18",
+      "modelFormat": "OpenAI",
+      "skuName": "GlobalStandard",
+      "skuCapacity": 100,
+      "raiPolicyName": "Microsoft.Default",
+      "versionUpgradeOption": "OnceCurrentVersionExpired",
+      "description": "OpenAI GPT-4o-mini - Affordable and efficient",
+      "enabled": true
+    }
+  ],
+  "environments": {
+    "dev": {
+      "comment": "Development environment - lower capacity, cost-effective",
+      "capacityMultiplier": 0.5
+    },
+    "test": {
+      "comment": "Test environment - moderate capacity",
+      "capacityMultiplier": 1.0
+    },
+    "prod": {
+      "comment": "Production environment - higher capacity for load",
+      "capacityMultiplier": 2.0
+    }
+  }
+}

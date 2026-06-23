@@ -1,0 +1,784 @@
+import { useEffect, useState } from "react";
+import { pronghornApi } from "@/integrations/pronghorn-api/client";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { toast } from "sonner";
+import { FileText, FilePlus, FileX, FilePenLine, Loader2, GitCommit, X, ArrowLeft, ChevronDown, Upload } from "lucide-react";
+import { CodeEditor } from "@/components/repository/CodeEditor";
+import { unstageFile, unstageMultiple, discardAllStaged, commitStaged } from "@/lib/stagingOperations";
+import { stagingChannel } from "@/lib/repoChannels";
+
+interface StagedChange {
+  id: string;
+  operation_type: "add" | "create" | "edit" | "modify" | "delete" | "rename";
+  file_path: string;
+  old_path?: string;
+  old_content?: string;
+  new_content?: string;
+  created_at: string;
+}
+
+interface StagedDiff extends StagedChange {
+  diffOldContent: string;
+  diffNewContent: string;
+}
+
+interface StagingPanelProps {
+  projectId: string;
+  shareToken: string | null;
+  onViewDiff?: (change: any) => void;
+  autoCommit: boolean;
+  onAutoCommitChange: (checked: boolean) => void;
+  refreshTrigger?: number;
+  onFilesChanged?: () => void;
+}
+
+export function StagingPanel({ projectId, shareToken, onViewDiff, autoCommit, onAutoCommitChange, refreshTrigger, onFilesChanged }: StagingPanelProps) {
+
+  const [stagedChanges, setStagedChanges] = useState<StagedChange[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [committing, setCommitting] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [commitMessage, setCommitMessage] = useState("");
+  const [repoId, setRepoId] = useState<string | null>(null);
+  const [repoInfo, setRepoInfo] = useState<any>(null);
+  const [allRepos, setAllRepos] = useState<any[]>([]); // Track all repos for multi-push
+  const [pendingCommits, setPendingCommits] = useState<any[]>([]);
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [viewingDiff, setViewingDiff] = useState<StagedDiff | null>(null);
+  const [loadingDiffPath, setLoadingDiffPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadRepoAndStagedChanges();
+  }, [projectId, shareToken, refreshTrigger]);
+
+  // Real-time subscription for staged changes - using broadcast pattern
+  useEffect(() => {
+    if (!repoId) return;
+
+    console.log(`[StagingPanel] Setting up broadcast listener for ${stagingChannel(repoId)}`);
+
+    const channel = pronghornApi
+      .channel(stagingChannel(repoId))
+      .on(
+        "broadcast",
+        { event: "staging_refresh" },
+        (payload) => {
+          console.log("[StagingPanel] Received staging_refresh broadcast:", payload);
+          loadRepoAndStagedChanges(false);
+        }
+      )
+      .subscribe((status) => {
+        console.log(`[StagingPanel] Channel subscription status: ${status}`);
+      });
+
+    return () => {
+      pronghornApi.removeChannel(channel);
+    };
+  }, [repoId]);
+
+  const loadRepoAndStagedChanges = async (withLoading: boolean = true) => {
+    if (!projectId) return;
+
+    try {
+      if (withLoading) {
+        setLoading(true);
+      }
+
+      // Get default repo for this project
+      const { data: repos, error: repoError } = await pronghornApi.rpc("get_project_repos_with_token", {
+        p_project_id: projectId,
+        p_token: shareToken || null,
+      });
+
+      if (repoError) throw repoError;
+
+      // Store all repos for multi-push support
+      setAllRepos(repos || []);
+
+      // Use Prime repo for all operations (staging, commits, push)
+      // Fall back to default repo if no prime exists
+      const primaryRepo = repos?.find((r) => r.is_prime) || repos?.find((r) => r.is_default) || repos?.[0];
+      if (!primaryRepo) {
+        setStagedChanges([]);
+        setRepoInfo(null);
+        setPendingCommits([]);
+        if (withLoading) {
+          setLoading(false);
+        }
+        return;
+      }
+
+      setRepoId(primaryRepo.id);
+      setRepoInfo(primaryRepo);
+
+      // Load staged changes
+      const { data: staged, error: stagedError } = await pronghornApi.rpc("get_staged_changes_with_token", {
+        p_repo_id: primaryRepo.id,
+        p_token: shareToken || null,
+      });
+
+      if (stagedError) throw stagedError;
+
+      const stagedRows = (staged || []) as StagedChange[];
+      setStagedChanges(stagedRows);
+      setSelectedFiles(new Set(stagedRows.map((change) => change.file_path)));
+
+      // Load pending commits (commits not yet pushed to GitHub - pushed_at IS NULL)
+      const { data: commits, error: commitsError } = await pronghornApi.rpc("get_commit_history_with_token", {
+        p_repo_id: primaryRepo.id,
+        p_token: shareToken || null,
+        p_branch: primaryRepo.branch,
+        p_limit: 50,
+      });
+
+      if (!commitsError && commits) {
+        // Filter to only show unpushed commits (pushed_at is null)
+        const unpushedCommits = commits.filter((c: any) => c.pushed_at == null);
+        setPendingCommits(unpushedCommits);
+      } else {
+        setPendingCommits([]);
+      }
+    } catch (error: any) {
+      console.error("Error loading staged changes:", error);
+      toast.error(error.message || "Failed to load staged changes");
+    } finally {
+      if (withLoading) {
+        setLoading(false);
+      }
+    }
+  };
+
+  const handleCommit = async () => {
+    if (!repoId || !commitMessage.trim()) {
+      toast.error("Please enter a commit message");
+      return;
+    }
+
+    if (selectedFiles.size === 0) {
+      toast.error("Select at least one staged file to commit");
+      return;
+    }
+
+    try {
+      setCommitting(true);
+      const filesToCommit = Array.from(selectedFiles);
+
+      await commitStaged({
+        repoId,
+        shareToken,
+        commitMessage,
+        branch: "main",
+        filePaths: filesToCommit,
+      });
+
+      toast.success(`Committed ${filesToCommit.length} change${filesToCommit.length !== 1 ? "s" : ""}`);
+
+      setCommitMessage("");
+      loadRepoAndStagedChanges();
+      onFilesChanged?.();
+    } catch (error: any) {
+      console.error("Error committing changes:", error);
+      toast.error(error.message || "Failed to commit changes");
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  const handlePushToGitHub = async () => {
+    if (!projectId || allRepos.length === 0) {
+      toast.error("No repositories configured");
+      return;
+    }
+
+    if (pendingCommits.length === 0) {
+      toast.error("No pending commits to push");
+      return;
+    }
+
+    if (stagedChanges.length > 0) {
+      toast.error("Uncommitted changes will not be pushed", {
+        description: `${stagedChanges.length} staged file(s) have not been committed and will be missing from the push. Commit them first, then push.`,
+      });
+      return;
+    }
+
+    try {
+      setPushing(true);
+
+      // Find Prime repo (source of truth) and mirror repos
+      const primeRepo = allRepos.find(r => r.is_prime) || allRepos[0];
+      const mirrorRepos = allRepos.filter(r => r.id !== primeRepo.id);
+
+      // Collect file paths from all pending commits, separating adds/edits from deletes
+      const addEditPaths = new Set<string>();
+      const deletePaths = new Set<string>();
+      pendingCommits.forEach(commit => {
+        if (commit.files_metadata && Array.isArray(commit.files_metadata)) {
+          commit.files_metadata.forEach((file: any) => {
+            if (file.path) {
+              if (file.operation === "delete") {
+                deletePaths.add(file.path);
+              } else if (file.operation === "rename") {
+                // For renames: add new path to push, add old path to delete
+                addEditPaths.add(file.path);
+                if (file.old_path) {
+                  deletePaths.add(file.old_path);
+                }
+              } else {
+                // 'add' or 'edit'
+                addEditPaths.add(file.path);
+              }
+            }
+          });
+        }
+      });
+
+      // Use the most recent commit message (first in the list)
+      const commitMessage = pendingCommits[0]?.commit_message || "Push from Build staging";
+
+      // Step 1: Push to Prime repo first
+      const { error: primeError } = await pronghornApi.functions.invoke("sync-repo-push", {
+        body: {
+          repoId: primeRepo.id,
+          projectId: projectId,
+          shareToken: shareToken,
+          branch: primeRepo.branch,
+          commitMessage: commitMessage,
+          filePaths: addEditPaths.size > 0 ? Array.from(addEditPaths) : undefined,
+          deletePaths: deletePaths.size > 0 ? Array.from(deletePaths) : undefined,
+          forcePush: false,
+        },
+      });
+
+      if (primeError) {
+        toast.error("Push Failed", {
+          description: `Failed to push to Prime repository: ${primeError.message}`,
+        });
+        return;
+      }
+
+      let successCount = 1; // Prime succeeded
+      let failureCount = 0;
+      const failedRepos: string[] = [];
+
+      // Step 2: Force push Prime's files to all mirror repos
+      if (mirrorRepos.length > 0) {
+        const mirrorPromises = mirrorRepos.map(async (repo) => {
+          const { data, error } = await pronghornApi.functions.invoke("sync-repo-push", {
+            body: {
+              repoId: repo.id,
+              sourceRepoId: primeRepo.id, // Fetch files from Prime repo
+              projectId: projectId,
+              shareToken: shareToken,
+              branch: repo.branch,
+              commitMessage: `Mirror sync: ${commitMessage}`,
+              forcePush: true, // Force push to overwrite mirrors
+            },
+          });
+          return { repo, data, error };
+        });
+
+        const mirrorResults = await Promise.allSettled(mirrorPromises);
+
+        mirrorResults.forEach((result) => {
+          if (result.status === "fulfilled" && !result.value.error) {
+            successCount++;
+          } else {
+            failureCount++;
+            if (result.status === "fulfilled") {
+              failedRepos.push(`${result.value.repo.organization}/${result.value.repo.repo}`);
+            }
+          }
+        });
+      }
+
+      if (failureCount === 0) {
+        toast.success(allRepos.length === 1
+          ? `Pushed to ${primeRepo.organization}/${primeRepo.repo}`
+          : `Pushed to Prime + ${mirrorRepos.length} mirror(s)`);
+      } else {
+        toast.error("Partial Success", {
+          description: `Pushed to Prime, failed mirrors: ${failedRepos.join(", ")}`,
+        });
+      }
+
+      // Refresh to clear pending commits and show new sync state
+      loadRepoAndStagedChanges(false);
+      onFilesChanged?.();
+    } catch (error: any) {
+      console.error("Error pushing to GitHub:", error);
+      toast.error(error.message || "Failed to push to GitHub");
+    } finally {
+      setPushing(false);
+    }
+  };
+
+  const handleUnstageFile = async (filePath: string) => {
+    if (!repoId) return;
+
+    try {
+      await unstageFile({
+        repoId,
+        shareToken,
+        filePath,
+      });
+
+      toast.success("File unstaged");
+      loadRepoAndStagedChanges();
+    } catch (error: any) {
+      console.error("Error unstaging file:", error);
+      toast.error(error.message || "Failed to unstage file");
+    }
+  };
+
+  const handleUnstageSelected = async () => {
+    if (!repoId || selectedFiles.size === 0) return;
+
+    try {
+      await unstageMultiple({
+        repoId,
+        shareToken,
+        filePaths: Array.from(selectedFiles),
+      });
+
+      toast.success(`${selectedFiles.size} file(s) unstaged`);
+      setSelectedFiles(new Set());
+      loadRepoAndStagedChanges();
+    } catch (error: any) {
+      console.error("Error unstaging files:", error);
+      toast.error(error.message || "Failed to unstage files");
+    }
+  };
+
+  const handleDiscardAll = async () => {
+    if (!repoId) return;
+
+    try {
+      await discardAllStaged({
+        repoId,
+        shareToken,
+      });
+
+      toast.success("Discarded all staged changes");
+
+      loadRepoAndStagedChanges();
+    } catch (error: any) {
+      console.error("Error discarding changes:", error);
+      toast.error(error.message || "Failed to discard changes");
+    }
+  };
+
+  const getOperationIcon = (type: string) => {
+    switch (type) {
+      case "add":
+      case "create":
+        return <FilePlus className="w-4 h-4 text-green-500" />;
+      case "edit":
+        return <FilePenLine className="w-4 h-4 text-blue-500" />;
+      case "delete":
+        return <FileX className="w-4 h-4 text-red-500" />;
+      case "rename":
+        return <FileText className="w-4 h-4 text-yellow-500" />;
+      default:
+        return <FileText className="w-4 h-4" />;
+    }
+  };
+
+  const getOperationBadge = (type: string) => {
+    const variants: Record<string, any> = {
+      add: "default",
+      create: "default",
+      edit: "secondary",
+      modify: "secondary",
+      delete: "destructive",
+      rename: "outline",
+    };
+    return (
+      <Badge variant={variants[type] || "default"} className="ml-2">
+        {type}
+      </Badge>
+    );
+  };
+
+  /**
+   * Opens a staged diff using committed repo_files content as the baseline.
+   *
+   * @example
+   * await handleViewDiff(change)
+   */
+  const handleViewDiff = async (change: StagedChange) => {
+    if (!repoId) return;
+
+    try {
+      setLoadingDiffPath(change.file_path);
+
+      // "Before" baseline: always from committed repo_files only (never staged blob)
+      let baselineContent = "";
+      if (change.operation_type !== "add" && change.operation_type !== "create") {
+        const baselinePath =
+          change.operation_type === "rename" && change.old_path
+            ? change.old_path
+            : change.file_path;
+
+        const { data, error } = await pronghornApi.rpc(
+          "get_committed_file_content_by_path_with_token",
+          {
+            p_repo_id: repoId,
+            p_file_path: baselinePath,
+            p_token: shareToken || null,
+          },
+        );
+
+        if (error) throw error;
+        baselineContent = data?.content || "";
+      }
+
+      // "After" content: read from blob via dedicated staged-content RPC
+      let afterContent = "";
+      if (change.operation_type !== "delete") {
+        const { data: stagedData, error: stagedError } = await pronghornApi.rpc(
+          "get_staged_file_content_with_token",
+          {
+            p_repo_id: repoId,
+            p_file_path: change.file_path,
+            p_token: shareToken || null,
+          },
+        );
+
+        if (stagedError) throw stagedError;
+        afterContent = stagedData?.content ?? "";
+      }
+
+      setViewingDiff({
+        ...change,
+        diffOldContent: baselineContent,
+        diffNewContent: afterContent,
+      });
+    } catch (error: any) {
+      console.error("Error loading diff baseline:", error);
+      toast.error(error.message || "Failed to load file baseline");
+    } finally {
+      setLoadingDiffPath(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center py-12">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Show diff viewer if a diff is being viewed
+  if (viewingDiff) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setViewingDiff(null)}
+          className="self-start shrink-0 mb-2"
+        >
+          <ArrowLeft className="w-4 h-4 mr-2" />
+          Back to Staging
+        </Button>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <CodeEditor
+            key={`${viewingDiff.id}-${viewingDiff.file_path}`}
+            fileId={viewingDiff.id}
+            filePath={viewingDiff.file_path}
+            repoId={repoId || ""}
+            isStaged={true}
+            initialContent={viewingDiff.diffNewContent}
+            showDiff={true}
+            diffOldContent={viewingDiff.diffOldContent}
+            onClose={() => setViewingDiff(null)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full w-full flex flex-col overflow-hidden min-w-0">
+      <Card className="h-full w-full flex flex-col overflow-hidden min-w-0 border-0 shadow-none">
+        <CardContent className="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden p-3">
+          {/* Auto-commit checkbox - always visible */}
+          <div className="flex items-center gap-2 mb-4 pb-4 border-b">
+            <Checkbox
+              id="auto-commit-staging"
+              checked={autoCommit}
+              onCheckedChange={(checked) => onAutoCommitChange(checked as boolean)}
+            />
+            <Label htmlFor="auto-commit-staging" className="text-sm">
+              Auto-commit and push changes
+            </Label>
+          </div>
+
+          {stagedChanges.length === 0 ? (
+            <div className="space-y-6 py-6">
+              <div className="text-center text-muted-foreground">
+                <GitCommit className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                <p className="mb-2">No staged changes</p>
+                {repoInfo && pendingCommits.length > 0 && (
+                  <p className="text-sm">Ready to push {pendingCommits.length} commit{pendingCommits.length !== 1 ? "s" : ""} to GitHub</p>
+                )}
+                {repoInfo && pendingCommits.length === 0 && (
+                  <p className="text-sm">All commits are up to date</p>
+                )}
+              </div>
+
+              {repoInfo && pendingCommits.length > 0 && (
+                <>
+                  <Separator />
+                  <div className="space-y-3">
+                    <h4 className="text-sm font-semibold">Pending Commits</h4>
+                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                      {pendingCommits.map((commit) => (
+                        <div
+                          key={commit.id}
+                          className="p-3 rounded-lg border border-border bg-card/50 hover:bg-card transition-colors"
+                        >
+                          <div className="flex items-start gap-2">
+                            <GitCommit className="w-4 h-4 mt-0.5 flex-shrink-0 text-muted-foreground" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">{commit.commit_message}</p>
+                              <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                                <span className="font-mono">{commit.commit_sha.substring(0, 7)}</span>
+                                <span>•</span>
+                                <span>{commit.files_changed} file{commit.files_changed !== 1 ? "s" : ""}</span>
+                                <span>•</span>
+                                <span>{new Date(commit.committed_at).toLocaleDateString()}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {repoInfo && pendingCommits.length > 0 && (
+                <>
+                  <Separator />
+                  <div className="space-y-4">
+                    <Button
+                      onClick={handlePushToGitHub}
+                      disabled={pushing}
+                      className="w-full"
+                      variant="default"
+                    >
+                      {pushing ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Pushing...
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-4 h-4 mr-2" />
+                          Push to Repository
+                        </>
+                      )}
+                    </Button>
+                    <p className="text-xs text-center text-muted-foreground">
+                      {(() => {
+                        const primeRepo = allRepos.find(r => r.is_prime) || allRepos[0];
+                        const mirrorCount = allRepos.length - 1;
+                        if (mirrorCount === 0) {
+                          return `${primeRepo?.organization}/${primeRepo?.repo} (Prime)`;
+                        }
+                        return `Prime: ${primeRepo?.organization}/${primeRepo?.repo} + ${mirrorCount} mirror(s)`;
+                      })()}
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4 min-w-0 overflow-hidden">
+              <Collapsible defaultOpen={false}>
+                <CollapsibleTrigger className="flex items-center justify-between w-full p-2 rounded-lg border bg-card hover:bg-accent/50 transition-colors">
+                  <span className="text-sm font-medium">
+                    {stagedChanges.length} file{stagedChanges.length !== 1 ? "s" : ""} staged
+                  </span>
+                  <ChevronDown className="h-4 w-4 transition-transform duration-200 [[data-state=open]>&]:rotate-180" />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-2 space-y-2">
+                  <div className="flex items-center justify-end gap-2 flex-wrap">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSelectedFiles(new Set(stagedChanges.map((change) => change.file_path)))}
+                    >
+                      Select All
+                    </Button>
+                    {selectedFiles.size > 0 && (
+                      <Button variant="outline" size="sm" onClick={handleUnstageSelected}>
+                        <X className="w-4 h-4 mr-1" />
+                        Unstage ({selectedFiles.size})
+                      </Button>
+                    )}
+                    <Button variant="ghost" size="sm" onClick={handleDiscardAll}>
+                      <X className="w-4 h-4 mr-1" />
+                      Discard All
+                    </Button>
+                  </div>
+
+                  <div className="space-y-2 max-h-[30vh] overflow-y-auto overflow-x-hidden">
+                    {stagedChanges.map((change) => (
+                      <div
+                        key={change.id}
+                        className="p-2 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+                      >
+                        <div className="flex items-start gap-2">
+                          <Checkbox
+                            className="mt-0.5 shrink-0"
+                            checked={selectedFiles.has(change.file_path)}
+                            onCheckedChange={(checked) => {
+                              const newSelected = new Set(selectedFiles);
+                              if (checked) {
+                                newSelected.add(change.file_path);
+                              } else {
+                                newSelected.delete(change.file_path);
+                              }
+                              setSelectedFiles(newSelected);
+                            }}
+                          />
+                          <div className="shrink-0">{getOperationIcon(change.operation_type)}</div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium break-all">{change.file_path}</p>
+                            {change.operation_type === "rename" && change.old_path && (
+                              <p className="text-xs text-muted-foreground break-all">
+                                from: {change.old_path}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-end gap-1 mt-1">
+                          {getOperationBadge(change.operation_type)}
+                          {(change.operation_type === "edit" || change.operation_type === "modify" || change.operation_type === "add" || change.operation_type === "create" || change.operation_type === "delete") && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2"
+                              disabled={loadingDiffPath === change.file_path}
+                              onClick={() => handleViewDiff(change)}
+                            >
+                              {loadingDiffPath === change.file_path ? "Loading..." : change.operation_type === "delete" ? "View" : "Diff"}
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2"
+                            onClick={() => handleUnstageFile(change.file_path)}
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+
+              <Separator />
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="commit-message">Commit Message</Label>
+                  <Input
+                    id="commit-message"
+                    placeholder="Enter commit message..."
+                    value={commitMessage}
+                    onChange={(e) => setCommitMessage(e.target.value)}
+                    disabled={committing}
+                  />
+                </div>
+
+
+                <Button
+                  onClick={handleCommit}
+                  disabled={committing || !commitMessage.trim() || selectedFiles.size === 0}
+                  className="w-full"
+                >
+                  {committing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Committing...
+                    </>
+                  ) : (
+                    <>
+                      <GitCommit className="w-4 h-4 mr-2" />
+                      Commit Changes
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              {repoInfo && pendingCommits.length > 0 && (
+                <>
+                  <Separator />
+                  <div className="space-y-3">
+                    <h4 className="text-sm font-semibold">Pending Commits</h4>
+                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                      {pendingCommits.map((commit) => (
+                        <div
+                          key={commit.id}
+                          className="p-3 rounded-lg border border-border bg-card/50 hover:bg-card transition-colors"
+                        >
+                          <div className="flex items-start gap-2">
+                            <GitCommit className="w-4 h-4 mt-0.5 flex-shrink-0 text-muted-foreground" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">{commit.commit_message}</p>
+                              <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                                <span className="font-mono">{commit.commit_sha.substring(0, 7)}</span>
+                                <span>•</span>
+                                <span>{commit.files_changed} file{commit.files_changed !== 1 ? "s" : ""}</span>
+                                <span>•</span>
+                                <span>{new Date(commit.committed_at).toLocaleDateString()}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <Button
+                      onClick={handlePushToGitHub}
+                      disabled={pushing}
+                      className="w-full"
+                      variant="default"
+                    >
+                      {pushing ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Pushing...
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-4 h-4 mr-2" />
+                          Push to Repository
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

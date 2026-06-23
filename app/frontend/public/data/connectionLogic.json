@@ -1,0 +1,85 @@
+{
+  "version": "1.0.0",
+  "description": "Defines valid edge connections between node types for architecture diagrams",
+  
+  "flowHierarchy": {
+    "description": "Node types ordered by typical left-to-right flow position",
+    "levels": [
+      { "level": 1, "types": ["PROJECT", "REQUIREMENT", "STANDARD", "TECH_STACK", "SECURITY"] },
+      { "level": 2, "types": ["PAGE"] },
+      { "level": 3, "types": ["WEB_COMPONENT", "COMPONENT"] },
+      { "level": 4, "types": ["HOOK_COMPOSABLE"] },
+      { "level": 5, "types": ["API_SERVICE", "AGENT", "OTHER"] },
+      { "level": 6, "types": ["API_ROUTER", "API_MIDDLEWARE", "API"] },
+      { "level": 7, "types": ["API_CONTROLLER", "API_UTIL", "WEBHOOK"] },
+      { "level": 8, "types": ["EXTERNAL_SERVICE", "SERVICE", "FIREWALL"] },
+      { "level": 9, "types": ["DATABASE"] },
+      { "level": 10, "types": ["SCHEMA"] },
+      { "level": 11, "types": ["TABLE"] }
+    ]
+  },
+  
+  "validConnections": [
+    { "source": "PROJECT", "targets": ["PAGE", "TECH_STACK", "REQUIREMENT", "STANDARD", "SECURITY"], "label": "contains" },
+    { "source": "REQUIREMENT", "targets": ["PAGE", "WEB_COMPONENT", "API_SERVICE", "DATABASE"], "label": "drives" },
+    { "source": "STANDARD", "targets": ["WEB_COMPONENT", "API_SERVICE", "DATABASE", "SECURITY"], "label": "governs" },
+    { "source": "SECURITY", "targets": ["API_MIDDLEWARE", "FIREWALL", "DATABASE"], "label": "protects" },
+    { "source": "PAGE", "targets": ["WEB_COMPONENT", "COMPONENT", "HOOK_COMPOSABLE"], "label": "renders" },
+    { "source": "WEB_COMPONENT", "targets": ["WEB_COMPONENT", "HOOK_COMPOSABLE"], "label": "uses" },
+    { "source": "COMPONENT", "targets": ["COMPONENT", "HOOK_COMPOSABLE", "API"], "label": "uses" },
+    { "source": "HOOK_COMPOSABLE", "targets": ["API_SERVICE", "EXTERNAL_SERVICE", "AGENT"], "label": "calls" },
+    { "source": "API_SERVICE", "targets": ["API_ROUTER"], "label": "routes to" },
+    { "source": "API_ROUTER", "targets": ["API_MIDDLEWARE", "API_CONTROLLER"], "label": "delegates to" },
+    { "source": "API_MIDDLEWARE", "targets": ["API_CONTROLLER"], "label": "passes to" },
+    { "source": "API_CONTROLLER", "targets": ["API_UTIL", "EXTERNAL_SERVICE", "DATABASE", "AGENT"], "label": "uses" },
+    { "source": "API", "targets": ["SERVICE", "DATABASE"], "label": "uses" },
+    { "source": "API_UTIL", "targets": ["EXTERNAL_SERVICE", "DATABASE"], "label": "accesses" },
+    { "source": "WEBHOOK", "targets": ["API_CONTROLLER", "EXTERNAL_SERVICE", "AGENT"], "label": "triggers" },
+    { "source": "EXTERNAL_SERVICE", "targets": ["DATABASE"], "label": "persists to" },
+    { "source": "SERVICE", "targets": ["DATABASE"], "label": "persists to" },
+    { "source": "DATABASE", "targets": ["SCHEMA"], "label": "contains" },
+    { "source": "SCHEMA", "targets": ["TABLE"], "label": "defines" },
+    { "source": "AGENT", "targets": ["API_SERVICE", "EXTERNAL_SERVICE", "WEB_COMPONENT", "DATABASE"], "label": "interacts with" },
+    { "source": "OTHER", "targets": ["API_SERVICE", "DATABASE", "EXTERNAL_SERVICE"], "label": "connects to" }
+  ],
+  
+  "xPositions": {
+    "PROJECT": 100,
+    "REQUIREMENT": 100,
+    "STANDARD": 100,
+    "TECH_STACK": 100,
+    "SECURITY": 100,
+    "PAGE": 400,
+    "WEB_COMPONENT": 700,
+    "COMPONENT": 700,
+    "HOOK_COMPOSABLE": 1000,
+    "API_SERVICE": 1300,
+    "AGENT": 1300,
+    "OTHER": 1300,
+    "API_ROUTER": 1600,
+    "API_MIDDLEWARE": 1600,
+    "API": 1600,
+    "API_CONTROLLER": 1900,
+    "API_UTIL": 1900,
+    "WEBHOOK": 1900,
+    "EXTERNAL_SERVICE": 2200,
+    "SERVICE": 2200,
+    "FIREWALL": 2200,
+    "DATABASE": 2500,
+    "SCHEMA": 2800,
+    "TABLE": 3100
+  },
+
+  "categoryOrder": ["annotation", "meta", "frontend", "backend", "infrastructure", "database", "agent", "general"],
+  
+  "categoryLabels": {
+    "annotation": "Annotations",
+    "meta": "Project & Standards",
+    "frontend": "Frontend",
+    "backend": "Backend / API",
+    "infrastructure": "Infrastructure",
+    "database": "Database",
+    "agent": "AI Agents",
+    "general": "Other"
+  }
+}

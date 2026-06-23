@@ -1,0 +1,253 @@
+<mxfile host="65bd71144e">
+    <diagram name="Platform vs Generated Apps Architecture" id="platform-genapp-separation">
+        <mxGraphModel dx="1950" dy="875" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1900" pageHeight="950" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="title" value="&lt;b&gt;Pronghorn — Platform, Shared, and User-Generated App Infrastructure&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=20;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="10" width="750" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="platform-boundary" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;strokeWidth=3;arcSize=4;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="65" width="480" height="680" as="geometry"/>
+                </mxCell>
+                <mxCell id="platform-title" value="&lt;b&gt;PLATFORM INFRASTRUCTURE&lt;/b&gt;&lt;br&gt;&lt;font style=&#39;font-size:11px;&#39;&gt;Provisioned by infra/main.tf · Static · One per environment&lt;/font&gt;" style="text;html=1;align=left;fontSize=14;fontColor=#0D47A1;" parent="1" vertex="1">
+                    <mxGeometry x="55" y="73" width="450" height="38" as="geometry"/>
+                </mxCell>
+                <mxCell id="plat-compute" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;strokeWidth=2;arcSize=6;" parent="1" vertex="1">
+                    <mxGeometry x="55" y="120" width="450" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="plat-compute-label" value="&lt;b&gt;Platform Container Apps Environment&lt;/b&gt;" style="text;html=1;align=left;fontSize=11;fontColor=#1565C0;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="125" width="320" height="18" as="geometry"/>
+                </mxCell>
+                <mxCell id="fe-app" value="&lt;b&gt;Frontend Container App&lt;/b&gt;&lt;br&gt;nginx:alpine · SPA&lt;br&gt;Port 80 · System MI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1565C0;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="155" width="200" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="api-app" value="&lt;b&gt;API Container App&lt;/b&gt;&lt;br&gt;Express.js + WebSocket&lt;br&gt;Node 20 Alpine&lt;br&gt;Port 8080 · UAMI + System MI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1565C0;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="290" y="155" width="200" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="plat-data" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;strokeWidth=2;arcSize=6;" parent="1" vertex="1">
+                    <mxGeometry x="55" y="285" width="450" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="plat-data-label" value="&lt;b&gt;Platform Data Layer&lt;/b&gt;" style="text;html=1;align=left;fontSize=11;fontColor=#1565C0;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="290" width="180" height="18" as="geometry"/>
+                </mxCell>
+                <mxCell id="pg-app" value="&lt;b&gt;PostgreSQL&lt;/b&gt;&lt;br&gt;Application DB" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#64B5F6;strokeColor=#1565C0;strokeWidth=2;size=10;fontSize=11;shadow=1;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="318" width="130" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="pg-gen" value="&lt;b&gt;PostgreSQL&lt;/b&gt;&lt;br&gt;Generated Apps DB" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#64B5F6;strokeColor=#1565C0;strokeWidth=2;size=10;fontSize=11;shadow=1;" parent="1" vertex="1">
+                    <mxGeometry x="220" y="318" width="140" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="storage" value="&lt;b&gt;Storage&lt;/b&gt;&lt;br&gt;Accounts" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#64B5F6;strokeColor=#1565C0;strokeWidth=2;size=10;fontSize=11;shadow=1;" parent="1" vertex="1">
+                    <mxGeometry x="380" y="318" width="110" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="plat-svc" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;strokeWidth=2;arcSize=6;" parent="1" vertex="1">
+                    <mxGeometry x="55" y="420" width="450" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="plat-svc-label" value="&lt;b&gt;Platform Services&lt;/b&gt;" style="text;html=1;align=left;fontSize=11;fontColor=#1565C0;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="425" width="180" height="18" as="geometry"/>
+                </mxCell>
+                <mxCell id="apim" value="&lt;b&gt;API Management&lt;/b&gt;&lt;br&gt;REST proxy · CORS&lt;br&gt;Rate limiting" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1565C0;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="453" width="140" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="foundry" value="&lt;b&gt;AI Foundry&lt;/b&gt;&lt;br&gt;Model Deployments&lt;br&gt;GPT-4o, etc." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1565C0;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="225" y="453" width="140" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="observability" value="&lt;b&gt;Observability&lt;/b&gt;&lt;br&gt;Log Analytics&lt;br&gt;App Insights" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1565C0;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="380" y="453" width="110" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="plat-sec" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;strokeWidth=2;arcSize=6;" parent="1" vertex="1">
+                    <mxGeometry x="55" y="555" width="450" height="85" as="geometry"/>
+                </mxCell>
+                <mxCell id="plat-sec-label" value="&lt;b&gt;Platform Identity &amp;amp; Security&lt;/b&gt;" style="text;html=1;align=left;fontSize=11;fontColor=#1565C0;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="560" width="220" height="18" as="geometry"/>
+                </mxCell>
+                <mxCell id="entra" value="&lt;b&gt;Entra App Reg&lt;/b&gt;&lt;br&gt;SPA · OIDC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1565C0;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="586" width="140" height="42" as="geometry"/>
+                </mxCell>
+                <mxCell id="uami" value="&lt;b&gt;UAMI&lt;/b&gt;&lt;br&gt;AcrPull · KV Secrets · Storage Blob" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1565C0;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="230" y="586" width="200" height="42" as="geometry"/>
+                </mxCell>
+                <mxCell id="plat-tf" value="&lt;b&gt;Managed by Terraform&lt;/b&gt; — infra/main.tf · 14 modules" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#5C6BC0;strokeWidth=1;arcSize=8;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="55" y="660" width="450" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="shared-boundary" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F57F17;strokeWidth=3;arcSize=4;" parent="1" vertex="1">
+                    <mxGeometry x="640" y="65" width="270" height="680" as="geometry"/>
+                </mxCell>
+                <mxCell id="shared-title" value="&lt;b&gt;SHARED INFRASTRUCTURE&lt;/b&gt;&lt;br&gt;&lt;font style=&#39;font-size:11px;&#39;&gt;Used by Platform + Generated Apps&lt;/font&gt;" style="text;html=1;align=left;fontSize=14;fontColor=#E65100;" parent="1" vertex="1">
+                    <mxGeometry x="655" y="73" width="240" height="38" as="geometry"/>
+                </mxCell>
+                <mxCell id="shared-acr" value="&lt;b&gt;Azure Container&lt;br&gt;Registry (ACR)&lt;/b&gt;&lt;br&gt;&lt;br&gt;Hosts images for:&lt;br&gt;• Platform API + Frontend&lt;br&gt;• All Generated Apps" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#F57F17;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="660" y="125" width="230" height="115" as="geometry"/>
+                </mxCell>
+                <mxCell id="shared-kv" value="&lt;b&gt;Platform Key Vault&lt;/b&gt;&lt;br&gt;(Central)&lt;br&gt;&lt;br&gt;• Platform secrets&lt;br&gt;• DB connection strings&lt;br&gt;• Deployment secrets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#F57F17;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="660" y="265" width="230" height="115" as="geometry"/>
+                </mxCell>
+                <mxCell id="shared-wl-env" value="&lt;b&gt;Workload Container&lt;br&gt;Apps Environment&lt;/b&gt;&lt;br&gt;&lt;br&gt;Shared ACA env hosting&lt;br&gt;all generated app containers&lt;br&gt;(isolated from platform env)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#F57F17;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="660" y="400" width="230" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="shared-per-app-kv" value="&lt;b&gt;Per-App Key Vaults&lt;/b&gt;&lt;br&gt;kv-ga-{appId}&lt;br&gt;&lt;br&gt;Created on-demand by API&lt;br&gt;before Terraform runs&lt;br&gt;• App env vars &amp;amp; secrets&lt;br&gt;• RBAC-isolated per app" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#F57F17;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="660" y="540" width="230" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="shared-tf" value="&lt;b&gt;Provisioned by&lt;/b&gt; infra/main.tf + API runtime" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FF8F00;strokeWidth=1;arcSize=8;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="660" y="680" width="230" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="genapp-boundary" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#7B1FA2;strokeWidth=3;arcSize=4;" parent="1" vertex="1">
+                    <mxGeometry x="1030" y="65" width="500" height="680" as="geometry"/>
+                </mxCell>
+                <mxCell id="genapp-title" value="&lt;b&gt;USER-GENERATED APP INFRASTRUCTURE&lt;/b&gt;&lt;br&gt;&lt;font style=&#39;font-size:11px;&#39;&gt;On-demand via genapp-deploy.yml · Per-tenant · Dynamic&lt;/font&gt;" style="text;html=1;align=left;fontSize=14;fontColor=#4A148C;" parent="1" vertex="1">
+                    <mxGeometry x="1045" y="73" width="470" height="38" as="geometry"/>
+                </mxCell>
+                <mxCell id="deploy-trigger" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1BEE7;strokeColor=#8E24AA;strokeWidth=2;arcSize=6;" parent="1" vertex="1">
+                    <mxGeometry x="1045" y="120" width="470" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="deploy-trigger-label" value="&lt;b&gt;Deployment Orchestration&lt;/b&gt;" style="text;html=1;align=left;fontSize=12;fontColor=#6A1B9A;" parent="1" vertex="1">
+                    <mxGeometry x="1060" y="126" width="220" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="api-trigger" value="&lt;b&gt;Pronghorn API&lt;/b&gt;&lt;br&gt;genappKeyVault.ts&lt;br&gt;• Creates per-app KV&lt;br&gt;• Seeds secrets&lt;br&gt;• Dispatches workflow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1060" y="155" width="195" height="82" as="geometry"/>
+                </mxCell>
+                <mxCell id="gh-workflow" value="&lt;b&gt;GitHub Actions&lt;/b&gt;&lt;br&gt;genapp-deploy.yml&lt;br&gt;• Build &amp;amp; push image&lt;br&gt;• Terraform apply/destroy&lt;br&gt;• Status polling + WS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1280" y="155" width="220" height="82" as="geometry"/>
+                </mxCell>
+                <mxCell id="per-app-resources" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1BEE7;strokeColor=#8E24AA;strokeWidth=2;arcSize=6;" parent="1" vertex="1">
+                    <mxGeometry x="1045" y="270" width="470" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="per-app-label" value="&lt;b&gt;Per-App Resources&lt;/b&gt; (created per deployment via infra/generated-app-template/)" style="text;html=1;align=left;fontSize=11;fontColor=#6A1B9A;" parent="1" vertex="1">
+                    <mxGeometry x="1060" y="276" width="440" height="18" as="geometry"/>
+                </mxCell>
+                <mxCell id="app-rg" value="&lt;b&gt;Resource Group&lt;/b&gt;&lt;br&gt;pronghorn-genapp-&lt;br&gt;{name}-{env}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1060" y="305" width="140" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="app-uami" value="&lt;b&gt;UAMI&lt;/b&gt;&lt;br&gt;Per-app identity&lt;br&gt;AcrPull role" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1220" y="305" width="130" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="app-container" value="&lt;b&gt;Container App&lt;/b&gt;&lt;br&gt;User&#39;s Docker image&lt;br&gt;KV secretRefs&lt;br&gt;Runs in shared ACA env" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1370" y="305" width="140" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="per-app-state" value="&lt;b&gt;Terraform State&lt;/b&gt;  genapp/{appId}.tfstate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="1060" y="397" width="200" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="tenant-examples" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1BEE7;strokeColor=#8E24AA;strokeWidth=2;arcSize=6;" parent="1" vertex="1">
+                    <mxGeometry x="1045" y="450" width="470" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="tenant-label" value="&lt;b&gt;Deployed App Instances&lt;/b&gt; (N apps, each with isolated resources)" style="text;html=1;align=left;fontSize=11;fontColor=#6A1B9A;" parent="1" vertex="1">
+                    <mxGeometry x="1060" y="456" width="440" height="18" as="geometry"/>
+                </mxCell>
+                <mxCell id="tenant-a" value="&lt;b&gt;App A&lt;/b&gt;&lt;br&gt;RG + UAMI + Container&lt;br&gt;+ KV secrets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1060" y="485" width="140" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="tenant-b" value="&lt;b&gt;App B&lt;/b&gt;&lt;br&gt;RG + UAMI + Container&lt;br&gt;+ KV secrets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1220" y="485" width="140" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="tenant-c" value="&lt;b&gt;App C&lt;/b&gt;&lt;br&gt;RG + UAMI + Container&lt;br&gt;+ KV secrets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1380" y="485" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="tenant-n" value="&lt;b&gt;App ...&lt;/b&gt; (per-tenant)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="1060" y="560" width="140" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="lifecycle" value="&lt;b&gt;Actions:&lt;/b&gt; create · deploy · destroy  |  &lt;b&gt;State:&lt;/b&gt; per-app tfstate in shared storage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#9C27B0;strokeWidth=1;arcSize=8;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1045" y="650" width="470" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="genapp-tf" value="&lt;b&gt;Managed by Terraform&lt;/b&gt; — infra/generated-app-template/ · On-demand" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EDE7F6;strokeColor=#7E57C2;strokeWidth=1;arcSize=8;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1045" y="693" width="470" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="api-to-acr" value="pulls images" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1976D2;strokeWidth=2;dashed=1;dashPattern=5 3;fontSize=10;labelBackgroundColor=#E3F2FD;fontColor=#0D47A1;exitX=1;exitY=0.33;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="api-app" target="shared-acr" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="570" y="185"/>
+                            <mxPoint x="570" y="182"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="api-to-kv" value="reads secrets" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1976D2;strokeWidth=2;dashed=1;dashPattern=5 3;fontSize=10;labelBackgroundColor=#E3F2FD;fontColor=#0D47A1;exitX=1;exitY=0.67;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="api-app" target="shared-kv" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="555" y="215"/>
+                            <mxPoint x="555" y="322"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="genapp-to-acr" value="pulls images" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#7B1FA2;strokeWidth=2;dashed=1;dashPattern=5 3;fontSize=10;labelBackgroundColor=#F3E5F5;fontColor=#4A148C;exitX=1;exitY=0;exitDx=0;exitDy=0;entryX=1;entryY=0;entryDx=0;entryDy=0;" parent="1" source="app-container" target="shared-acr" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1510" y="305"/>
+                            <mxPoint x="1550" y="305"/>
+                            <mxPoint x="1550" y="55"/>
+                            <mxPoint x="890" y="55"/>
+                            <mxPoint x="890" y="125"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="genapp-to-wl" value="runs in" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#7B1FA2;strokeWidth=2;fontSize=10;labelBackgroundColor=#F3E5F5;fontColor=#4A148C;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="app-container" target="shared-wl-env" edge="1">
+                    <mxGeometry x="-0.6062" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="1440" y="390"/>
+                            <mxPoint x="970" y="390"/>
+                            <mxPoint x="970" y="460"/>
+                        </Array>
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="genapp-to-kv" value="reads secrets" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#7B1FA2;strokeWidth=2;dashed=1;dashPattern=5 3;fontSize=10;labelBackgroundColor=#F3E5F5;fontColor=#4A148C;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="tenant-a" target="shared-per-app-kv" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="950" y="515"/>
+                            <mxPoint x="950" y="600"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="api-dispatches" value="dispatches" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#F57F17;strokeWidth=2;fontSize=10;labelBackgroundColor=#E1BEE7;fontColor=#4A148C;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="api-trigger" target="gh-workflow" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="api-creates-kv" value="creates vault" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#F57F17;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=10;labelBackgroundColor=#FFF8E1;fontColor=#E65100;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=1;entryDx=0;entryDy=0;" parent="1" source="api-trigger" target="shared-per-app-kv" edge="1">
+                    <mxGeometry x="-0.4996" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="990" y="217"/>
+                            <mxPoint x="990" y="660"/>
+                        </Array>
+                        <mxPoint y="1" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="legend-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#BDBDBD;strokeWidth=1;arcSize=4;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="770" width="1490" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="leg-plat" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="785" width="20" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="leg-plat-t" value="Platform (static, one per env)" style="text;html=1;fontSize=11;fontColor=#333;" parent="1" vertex="1">
+                    <mxGeometry x="85" y="785" width="200" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="leg-shared" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F57F17;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="330" y="785" width="20" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="leg-shared-t" value="Shared (used by platform + generated apps)" style="text;html=1;fontSize=11;fontColor=#333;" parent="1" vertex="1">
+                    <mxGeometry x="355" y="785" width="270" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="leg-genapp" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#7B1FA2;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="670" y="785" width="20" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="leg-genapp-t" value="User-Generated Apps (dynamic, per-tenant, on-demand)" style="text;html=1;fontSize=11;fontColor=#333;" parent="1" vertex="1">
+                    <mxGeometry x="695" y="785" width="340" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="leg-arrow" value="" style="endArrow=classic;strokeColor=#1976D2;strokeWidth=2;dashed=1;dashPattern=5 3;" parent="1" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="1080" y="795" as="sourcePoint"/>
+                        <mxPoint x="1130" y="795" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="leg-arrow-t" value="Data / image pull" style="text;html=1;fontSize=11;fontColor=#333;" parent="1" vertex="1">
+                    <mxGeometry x="1135" y="785" width="120" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="leg-arrow2" value="" style="endArrow=classic;strokeColor=#F57F17;strokeWidth=2;" parent="1" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="1300" y="795" as="sourcePoint"/>
+                        <mxPoint x="1350" y="795" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="leg-arrow2-t" value="Orchestration" style="text;html=1;fontSize=11;fontColor=#333;" parent="1" vertex="1">
+                    <mxGeometry x="1355" y="785" width="110" height="20" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

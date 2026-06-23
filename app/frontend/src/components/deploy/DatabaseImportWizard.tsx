@@ -1,0 +1,1423 @@
+import React, { useState, useCallback, useMemo, useEffect } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ChevronLeft, ChevronRight, Upload, Database, FileSpreadsheet, FileJson, Check, Plus, ArrowRight, GitBranch, Loader2, ShieldCheck } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ExcelData } from "@/utils/parseExcel";
+import {
+  ParsedJsonData,
+  getJsonHeaders,
+  getJsonRowsAsArray,
+  NormalizationStrategy,
+  NormalizationOptions,
+  JsonStructureNode,
+  SchemaStatistics,
+  analyzeJsonStructure,
+  analyzeSchemaStatistics,
+  parseJsonData as parseJsonDataWithOptions
+} from "@/utils/parseJson";
+import { SQLStatement, TableDefinition, generateFullImportSQL, calculateBatchSize, generateInsertBatchSQL, generateMultiTableImportSQL, generateSmartImportSQL } from "@/utils/sqlGenerator";
+import { extractDDLStatements } from "@/lib/sqlParser";
+import {
+  ExistingTableSchema,
+  TableMatchResult,
+  matchTables,
+  updateMatchResolution,
+  updateConflictResolution,
+  getMatchingSummary
+} from "@/utils/tableMatching";
+import FileUploader from "./import/FileUploader";
+import ExcelDataGrid from "./import/ExcelDataGrid";
+import JsonDataViewer from "./import/JsonDataViewer";
+import SchemaCreator, { ColumnConfig } from "./import/SchemaCreator";
+import FieldMapper from "./import/FieldMapper";
+import SqlReviewPanel from "./import/SqlReviewPanel";
+import ImportProgressTracker from "./import/ImportProgressTracker";
+import JsonNormalizationSelector from "./import/JsonNormalizationSelector";
+import { DatabaseErdView } from "./import/DatabaseErdView";
+import { ConflictResolutionPanel } from "./import/ConflictResolutionPanel";
+import { pronghornApi } from "@/integrations/pronghorn-api/client";
+import { toast } from "sonner";
+
+type WizardStep = "upload" | "normalize" | "clean" | "schema" | "review" | "execute";
+type ImportAction = "create_new" | "import_existing";
+
+interface ColumnMapping {
+  sourceColumn: string;
+  targetColumn: string | null;
+  ignored: boolean;
+  constantValue?: string;
+  castingEnabled: boolean;
+}
+
+interface ExecutionProgress {
+  currentBatch: number;
+  totalBatches: number;
+  rowsCompleted: number;
+  totalRows: number;
+  currentStatement: string;
+  status: "running" | "paused" | "completed" | "error";
+  errors: { row: number; error: string }[];
+  startTime?: number;
+}
+
+interface TableColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+}
+
+interface DatabaseImportWizardProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  databaseId?: string;
+  connectionId?: string;
+  projectId: string;
+  shareToken: string | null;
+  schema?: string;
+  existingTables?: string[];
+  onImportComplete?: () => void;
+}
+
+const STEPS: { key: WizardStep; label: string; icon: React.ReactNode }[] = [
+  { key: "upload", label: "Upload", icon: <Upload className="h-4 w-4" /> },
+  { key: "normalize", label: "Structure", icon: <GitBranch className="h-4 w-4" /> },
+  { key: "clean", label: "Preview", icon: <FileSpreadsheet className="h-4 w-4" /> },
+  { key: "schema", label: "Schema", icon: <Database className="h-4 w-4" /> },
+  { key: "review", label: "Review", icon: <FileJson className="h-4 w-4" /> },
+  { key: "execute", label: "Execute", icon: <Check className="h-4 w-4" /> },
+];
+
+export default function DatabaseImportWizard({
+  open,
+  onOpenChange,
+  databaseId,
+  connectionId,
+  projectId,
+  shareToken,
+  schema = "public",
+  existingTables = [],
+  onImportComplete
+}: DatabaseImportWizardProps) {
+  const [currentStep, setCurrentStep] = useState<WizardStep>("upload");
+
+  // File state
+  const [fileType, setFileType] = useState<"excel" | "csv" | "json" | null>(null);
+  const [excelData, setExcelData] = useState<ExcelData | null>(null);
+  const [jsonData, setJsonData] = useState<ParsedJsonData | null>(null);
+  const [rawJsonData, setRawJsonData] = useState<any>(null); // Store raw JSON for re-parsing
+  const [rawJsonFileName, setRawJsonFileName] = useState<string>("imported_data");
+  const [selectedSheet, setSelectedSheet] = useState<string>("");
+  const [headerRow, setHeaderRow] = useState<number>(0);
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [selectedRowsByTable, setSelectedRowsByTable] = useState<Map<string, Set<number>>>(new Map());
+  const [selectedJsonTable, setSelectedJsonTable] = useState<string>("");
+
+  // Normalization state
+  const [normalizationStrategy, setNormalizationStrategy] = useState<NormalizationStrategy>("partial");
+  const [customTablePaths, setCustomTablePaths] = useState<Set<string>>(new Set());
+  const [jsonStructure, setJsonStructure] = useState<JsonStructureNode[]>([]);
+  const [schemaStats, setSchemaStats] = useState<SchemaStatistics | null>(null);
+
+  // AI mode
+  const [, setAiMode] = useState(false);
+  const [, setAiLoading] = useState(false);
+  const [, setAiExplanation] = useState<string | null>(null);
+
+  // Schema state
+  const [action, setAction] = useState<ImportAction>("create_new");
+  const [targetTable, setTargetTable] = useState<string | null>(null);
+  const [tableName, setTableName] = useState<string>("");
+  const [tableDef, setTableDef] = useState<TableDefinition | null>(null);
+  const [columnMappings, setColumnMappings] = useState<ColumnMapping[]>([]);
+  const [targetColumns, setTargetColumns] = useState<TableColumn[]>([]);
+  const [enableCasting, setEnableCasting] = useState(true);
+
+  // Schema column state - persisted across tab switches
+  const [schemaColumns, setSchemaColumns] = useState<ColumnConfig[] | null>(null);
+
+  // Per-table definitions for multi-table JSON import
+  const [tableDefsMap, setTableDefsMap] = useState<Map<string, TableDefinition>>(new Map());
+
+  // Per-table column configs for multi-table JSON import (persisted across tab switches)
+  const [multiTableColumns, setMultiTableColumns] = useState<Map<string, ColumnConfig[]>>(new Map());
+
+  // Smart table matching state
+  const [existingSchemas, setExistingSchemas] = useState<ExistingTableSchema[]>([]);
+  const [loadingSchema, setLoadingSchema] = useState(false);
+  const [tableMatches, setTableMatches] = useState<TableMatchResult[]>([]);
+  const [schemaSubTab, setSchemaSubTab] = useState<"designer" | "erd" | "conflicts">("designer");
+
+  // Memoized callback for SchemaCreator to prevent re-renders
+  const handleTableDefChange = useCallback((def: TableDefinition) => {
+    setTableDef(def);
+  }, []);
+
+  // Memoized callback for multi-table SchemaCreator
+  const handleMultiTableDefChange = useCallback((tableName: string, def: TableDefinition) => {
+    setTableDefsMap(prev => new Map(prev).set(tableName, def));
+  }, []);
+
+  // Handle table match resolution changes
+  const handleTableResolutionChange = useCallback((tableName: string, newStatus: "new" | "insert" | "augment" | "skip") => {
+    setTableMatches(prev => updateMatchResolution(prev, tableName, newStatus));
+  }, []);
+
+  // Handle column conflict resolution changes
+  const handleConflictResolutionChange = useCallback((tableName: string, columnName: string, resolution: "skip" | "cast" | "alter" | "block") => {
+    setTableMatches(prev => updateConflictResolution(prev, tableName, columnName, resolution));
+  }, []);
+
+  // SQL state
+  const [proposedSQL, setProposedSQL] = useState<SQLStatement[]>([]);
+  const [sqlReviewed, setSqlReviewed] = useState(false);
+  const [excludedStatements, setExcludedStatements] = useState<Set<number>>(new Set());
+
+  // Execution state
+  const [executionProgress, setExecutionProgress] = useState<ExecutionProgress | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
+  const [rollbackOnFailure, setRollbackOnFailure] = useState(true);
+
+  const currentStepIndex = STEPS.findIndex(s => s.key === currentStep);
+  const canGoBack = currentStepIndex > 0 && executionProgress?.status !== "running";
+
+  // Get current data headers and rows
+  const { headers, dataRows } = useMemo(() => {
+    if (fileType === "json" && jsonData) {
+      const table = jsonData.tables.find(t => t.name === selectedJsonTable) || jsonData.tables[0];
+      if (!table) return { headers: [], dataRows: [] };
+      return {
+        headers: getJsonHeaders(table),
+        dataRows: getJsonRowsAsArray(table)
+      };
+    } else if (excelData) {
+      const sheet = excelData.sheets.find(s => s.name === selectedSheet) || excelData.sheets[0];
+      if (!sheet) return { headers: [], dataRows: [] };
+      const hdrs = sheet.rows[headerRow] || [];
+      const rows = sheet.rows.slice(headerRow + 1);
+      return { headers: hdrs.map(h => String(h ?? "")), dataRows: rows };
+    }
+    return { headers: [], dataRows: [] };
+  }, [fileType, jsonData, selectedJsonTable, excelData, selectedSheet, headerRow]);
+
+  // Get selected data rows for import
+  const selectedDataRows = useMemo(() => {
+    if (selectedRows.size === 0) return dataRows;
+    return dataRows.filter((_, idx) => selectedRows.has(idx));
+  }, [dataRows, selectedRows]);
+
+  // Memoize sample data for SchemaCreator to prevent re-inference on every render
+  const memoizedSampleData = useMemo(() =>
+    selectedDataRows.slice(0, 1000),
+    [selectedDataRows]
+  );
+
+  // Auto-select all rows initially
+  useEffect(() => {
+    if (dataRows.length > 0 && selectedRows.size === 0) {
+      setSelectedRows(new Set(dataRows.map((_, i) => i)));
+    }
+  }, [dataRows]);
+
+  // Auto-select first JSON table for multi-table JSON
+  useEffect(() => {
+    if (fileType === "json" && jsonData && jsonData.tables.length > 0 && !selectedJsonTable) {
+      setSelectedJsonTable(jsonData.tables[0].name);
+    }
+  }, [fileType, jsonData, selectedJsonTable]);
+
+  // Fetch database schema when wizard opens
+  useEffect(() => {
+    const loadDatabaseSchema = async () => {
+      if (!open || (!databaseId && !connectionId)) return;
+
+      setLoadingSchema(true);
+      try {
+        const body: any = {
+          action: "get_schema",
+          shareToken,
+        };
+        if (databaseId) body.databaseId = databaseId;
+        if (connectionId) body.connectionId = connectionId;
+
+        const { data, error } = await pronghornApi.functions.invoke("manage-database", { body });
+
+        if (!error && data?.success && data.data?.schemas) {
+          const publicSchema = data.data.schemas.find((s: any) => s.name === schema);
+          if (publicSchema?.tables) {
+            // Fetch columns for each table
+            const tablesWithColumns: ExistingTableSchema[] = await Promise.all(
+              publicSchema.tables.map(async (tableName: string) => {
+                try {
+                  const colBody: any = {
+                    action: "get_table_columns",
+                    shareToken,
+                    schema,
+                    table: tableName
+                  };
+                  if (databaseId) colBody.databaseId = databaseId;
+                  if (connectionId) colBody.connectionId = connectionId;
+
+                  const { data: colData } = await pronghornApi.functions.invoke("manage-database", { body: colBody });
+
+                  if (colData?.success && colData.data?.columns) {
+                    return {
+                      name: tableName,
+                      columns: colData.data.columns.map((c: any) => ({
+                        name: c.name || c.column_name,
+                        type: c.type || c.data_type,
+                        nullable: c.nullable ?? c.is_nullable === "YES"
+                      }))
+                    };
+                  }
+                } catch (e) {
+                  console.error(`Failed to load columns for ${tableName}:`, e);
+                }
+                return { name: tableName, columns: [] };
+              })
+            );
+            setExistingSchemas(tablesWithColumns);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load database schema:", e);
+      } finally {
+        setLoadingSchema(false);
+      }
+    };
+
+    loadDatabaseSchema();
+  }, [open, databaseId, connectionId, shareToken, schema]);
+
+  // Run table matching when JSON data changes and we have existing schemas
+  useEffect(() => {
+    if (jsonData && jsonData.tables.length > 0 && existingSchemas.length > 0) {
+      const matches = matchTables(jsonData.tables, existingSchemas);
+      setTableMatches(matches);
+    } else {
+      setTableMatches([]);
+    }
+  }, [jsonData, existingSchemas]);
+
+  const goBack = () => {
+    if (canGoBack) {
+      setCurrentStep(STEPS[currentStepIndex - 1].key);
+    }
+  };
+
+  const goNext = () => {
+    if (currentStepIndex < STEPS.length - 1) {
+      const nextStep = STEPS[currentStepIndex + 1].key;
+
+      // Skip normalize step for non-JSON files
+      if (nextStep === "normalize" && fileType !== "json") {
+        setCurrentStep("clean");
+        return;
+      }
+
+      // Re-parse JSON with selected normalization options when moving from normalize to clean
+      if (currentStep === "normalize" && nextStep === "clean" && rawJsonData) {
+        const options: NormalizationOptions = {
+          strategy: normalizationStrategy,
+          customTablePaths: normalizationStrategy === "custom" ? customTablePaths : undefined
+        };
+        const reparsed = parseJsonDataWithOptions(rawJsonData, rawJsonFileName, options);
+        setJsonData(reparsed);
+
+        // Reset selections for new table structure
+        if (reparsed.tables.length > 0) {
+          setSelectedJsonTable(reparsed.tables[0].name);
+          setTableName(reparsed.tables[0].name);
+
+          const initialSelection = new Map<string, Set<number>>();
+          reparsed.tables.forEach(table => {
+            initialSelection.set(table.name, new Set(table.rows.map((_, i) => i)));
+          });
+          setSelectedRowsByTable(initialSelection);
+        }
+      }
+
+      // Generate SQL when moving to review step
+      if (nextStep === "review") {
+        if (fileType === "json" && jsonData && jsonData.tables.length > 1) {
+          // Multi-table JSON import - use smart import if we have matches
+          if (tableMatches.length > 0 && existingSchemas.length > 0) {
+            const statements = generateSmartImportSQL(
+              jsonData.tables,
+              jsonData.relationships,
+              tableMatches,
+              existingSchemas,
+              schema,
+              selectedRowsByTable,
+              tableDefsMap,
+              { wrapInTransaction: rollbackOnFailure }
+            );
+            setProposedSQL(statements);
+          } else {
+            // Fallback to regular multi-table import
+            const statements = generateMultiTableImportSQL(
+              jsonData.tables,
+              jsonData.relationships,
+              schema,
+              selectedRowsByTable,
+              tableDefsMap,
+              { wrapInTransaction: rollbackOnFailure }
+            );
+            setProposedSQL(statements);
+          }
+          setSqlReviewed(false);
+        } else if (action === "create_new" && tableDef) {
+          const batchSize = calculateBatchSize(tableDef.columns.length, selectedDataRows.length);
+          const statements = generateFullImportSQL(tableDef, selectedDataRows, batchSize, { wrapInTransaction: rollbackOnFailure });
+          setProposedSQL(statements);
+          setSqlReviewed(false);
+        } else if (action === "import_existing" && targetTable && columnMappings.length > 0) {
+          // Generate INSERT statements for existing table import
+          const statements = generateExistingTableInsertSQL(
+            targetTable,
+            schema,
+            headers,
+            columnMappings,
+            selectedDataRows,
+            enableCasting,
+            targetColumns
+          );
+          setProposedSQL(statements);
+          setSqlReviewed(false);
+        }
+      }
+
+      setCurrentStep(nextStep);
+    }
+  };
+
+  // Generate INSERT SQL for importing to an existing table
+  const generateExistingTableInsertSQL = (
+    table: string,
+    targetSchema: string,
+    sourceHeaders: string[],
+    mappings: ColumnMapping[],
+    rows: any[][],
+    castingEnabled: boolean,
+    columns: TableColumn[]
+  ): SQLStatement[] => {
+    // Get mapped columns (non-ignored with a target)
+    const activeMappings = mappings.filter(m => !m.ignored && m.targetColumn);
+    if (activeMappings.length === 0 || rows.length === 0) {
+      console.warn("[generateExistingTableInsertSQL] No active mappings or rows", { activeMappings, rowCount: rows.length });
+      return [];
+    }
+
+    // Map source column indices
+    const sourceIndices = activeMappings.map(m => sourceHeaders.indexOf(m.sourceColumn));
+    const targetColumnNames = activeMappings.map(m => m.targetColumn!);
+
+    // Find target column types for casting
+    const targetColumnTypes = activeMappings.map(m => {
+      const col = columns.find(c => c.name === m.targetColumn);
+      return col?.type || "text";
+    });
+
+    // Transform rows based on mappings
+    const mappedRows = rows.map(row => {
+      return sourceIndices.map((srcIdx, i) => {
+        const value = srcIdx >= 0 ? row[srcIdx] : null;
+        if (castingEnabled && activeMappings[i].castingEnabled) {
+          return castValue(value, targetColumnTypes[i]);
+        }
+        return value;
+      });
+    });
+
+    const batchSize = calculateBatchSize(targetColumnNames.length, mappedRows.length);
+    return generateInsertBatchSQL(table, targetSchema, targetColumnNames, mappedRows, batchSize);
+  };
+
+  // Simple value casting helper
+  const castValue = (value: any, targetType: string): any => {
+    if (value === null || value === undefined || value === "") return null;
+    const strVal = String(value).trim();
+
+    if (targetType.includes("int") || targetType === "bigint" || targetType === "smallint") {
+      const parsed = parseInt(strVal.replace(/[^0-9-]/g, ""), 10);
+      return isNaN(parsed) ? null : parsed;
+    }
+    if (targetType.includes("numeric") || targetType.includes("decimal") || targetType === "real" || targetType === "double precision") {
+      const parsed = parseFloat(strVal.replace(/[^0-9.-]/g, ""));
+      return isNaN(parsed) ? null : parsed;
+    }
+    if (targetType === "boolean" || targetType === "bool") {
+      const lower = strVal.toLowerCase();
+      if (["true", "yes", "1", "on"].includes(lower)) return true;
+      if (["false", "no", "0", "off"].includes(lower)) return false;
+      return null;
+    }
+    if (targetType.includes("timestamp") || targetType === "date") {
+      const d = new Date(strVal);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    return value;
+  };
+
+  const canProceed = useCallback(() => {
+    switch (currentStep) {
+      case "upload":
+        return excelData !== null || jsonData !== null;
+      case "normalize":
+        // Always can proceed from normalize step - user has made their choice
+        return fileType === "json" && jsonStructure.length >= 0;
+      case "clean":
+        if (fileType === "json" && jsonData && jsonData.tables.length > 1) {
+          // Multi-table: check if any table has selected rows
+          return Array.from(selectedRowsByTable.values()).some(set => set.size > 0);
+        }
+        return selectedRows.size > 0 || selectedDataRows.length > 0;
+      case "schema":
+        if (fileType === "json" && jsonData && jsonData.tables.length > 1) {
+          // Multi-table JSON always can proceed (auto-creates tables)
+          return true;
+        }
+        return action === "create_new"
+          ? tableName.trim().length > 0 && tableDef !== null
+          : targetTable !== null && columnMappings.some(m => !m.ignored && m.targetColumn);
+      case "review":
+        return sqlReviewed && proposedSQL.length > 0;
+      case "execute":
+        return executionProgress?.status === "completed";
+      default:
+        return false;
+    }
+  }, [currentStep, excelData, jsonData, fileType, jsonStructure, selectedRows, selectedDataRows, selectedRowsByTable, action, tableName, tableDef, targetTable, columnMappings, sqlReviewed, proposedSQL, executionProgress]);
+
+  const handleFileUploaded = useCallback((
+    type: "excel" | "csv" | "json",
+    data: ExcelData | ParsedJsonData,
+    rawData?: any,
+    fileName?: string
+  ) => {
+    setFileType(type);
+    setSelectedRows(new Set());
+
+    if (type === "json") {
+      const jsonParsed = data as ParsedJsonData;
+      setJsonData(jsonParsed);
+      setExcelData(null);
+
+      // Store raw JSON for re-parsing with different normalization options
+      if (rawData) {
+        setRawJsonData(rawData);
+        setRawJsonFileName(fileName || "imported_data");
+        // Analyze structure for normalization selector
+        const structure = analyzeJsonStructure(rawData);
+        setJsonStructure(structure);
+        // Analyze schema statistics for heterogeneous documents
+        const stats = analyzeSchemaStatistics(rawData);
+        setSchemaStats(stats);
+      }
+
+      if (jsonParsed.tables.length > 0) {
+        setSelectedJsonTable(jsonParsed.tables[0].name);
+        setTableName(jsonParsed.tables[0].name);
+
+        // Initialize selectedRowsByTable with all rows selected for each table
+        const initialSelection = new Map<string, Set<number>>();
+        jsonParsed.tables.forEach(table => {
+          initialSelection.set(table.name, new Set(table.rows.map((_, i) => i)));
+        });
+        setSelectedRowsByTable(initialSelection);
+      }
+    } else {
+      const excelParsed = data as ExcelData;
+      setExcelData(excelParsed);
+      setJsonData(null);
+      setRawJsonData(null);
+      setJsonStructure([]);
+      setSchemaStats(null);
+      if (excelParsed.sheets.length > 0) {
+        setSelectedSheet(excelParsed.sheets[0].name);
+        setHeaderRow(excelParsed.sheets[0].headerRowIndex);
+        setTableName(excelParsed.fileName.replace(/\.(xlsx?|csv)$/i, "").toLowerCase().replace(/[^a-z0-9_]/g, "_"));
+      }
+    }
+  }, []);
+
+  const resetWizard = useCallback(() => {
+    setCurrentStep("upload");
+    setFileType(null);
+    setExcelData(null);
+    setJsonData(null);
+    setRawJsonData(null);
+    setRawJsonFileName("imported_data");
+    setSelectedSheet("");
+    setHeaderRow(0);
+    setSelectedRows(new Set());
+    setSelectedJsonTable("");
+    setNormalizationStrategy("partial");
+    setCustomTablePaths(new Set());
+    setJsonStructure([]);
+    setSchemaStats(null);
+    setAiMode(false);
+    setAiLoading(false);
+    setAiExplanation(null);
+    setAction("create_new");
+    setTargetTable(null);
+    setTableName("");
+    setTableDef(null);
+    setColumnMappings([]);
+    setTargetColumns([]);
+    setEnableCasting(true);
+    setProposedSQL([]);
+    setSqlReviewed(false);
+    setExecutionProgress(null);
+    setIsPaused(false);
+  }, []);
+
+  // Call AI agent for schema/mapping suggestions
+  
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) resetWizard();
+    onOpenChange(newOpen);
+  };
+
+  // Load target table columns when selected
+  useEffect(() => {
+    if (action === "import_existing" && targetTable && (databaseId || connectionId)) {
+      const loadColumns = async () => {
+        try {
+          const body: any = {
+            action: "get_table_columns",
+            shareToken,
+            schema: "public",
+            table: targetTable
+          };
+          if (databaseId) body.databaseId = databaseId;
+          if (connectionId) body.connectionId = connectionId;
+
+          const { data, error } = await pronghornApi.functions.invoke("manage-database", { body });
+          console.log("[Import Wizard] Target columns response:", data);
+          if (!error && data?.success && data.data?.columns) {
+            // Handle both response formats: {name, type} or {column_name, data_type}
+            setTargetColumns(data.data.columns.map((c: any) => ({
+              name: c.name || c.column_name,
+              type: c.type || c.data_type,
+              nullable: c.nullable ?? c.is_nullable === "YES"
+            })));
+            // Reset mappings when table changes so they get re-auto-matched
+            setColumnMappings([]);
+          } else {
+            console.error("[Import Wizard] No columns in response:", data);
+            setTargetColumns([]);
+          }
+        } catch (e) {
+          console.error("Failed to load columns:", e);
+          setTargetColumns([]);
+        }
+      };
+      loadColumns();
+    }
+  }, [action, targetTable, databaseId, connectionId, shareToken]);
+
+  // Helper to extract real error from various response formats
+  const extractRealError = (data: any, error: any, rawMessage?: string): string => {
+    // 1. Check response data for error field
+    if (data?.error) {
+      return data.error;
+    }
+
+    // 2. Check for batch execution results
+    if (data?.results && Array.isArray(data.results)) {
+      const failed = data.results.find((r: any) => !r.success);
+      if (failed?.error) return failed.error;
+    }
+
+    // 3. Check error object directly
+    if (error) {
+      
+      if (error.context?.error) return error.context.error;
+
+      // Try to extract JSON from error message (e.g., "Edge Function returned 400: {...}")
+      const errorStr = error.message || String(error);
+
+      // Match JSON object containing "error" field
+      const jsonMatch = errorStr.match(/\{[^{}]*"error"\s*:\s*"[^"]+"/);
+      if (jsonMatch) {
+        try {
+          // Extract full JSON object
+          const startIdx = errorStr.indexOf("{");
+          let braceCount = 0;
+          let endIdx = startIdx;
+          for (let i = startIdx; i < errorStr.length; i++) {
+            if (errorStr[i] === "{") braceCount++;
+            if (errorStr[i] === "}") braceCount--;
+            if (braceCount === 0) {
+              endIdx = i + 1;
+              break;
+            }
+          }
+          const parsed = JSON.parse(errorStr.substring(startIdx, endIdx));
+          if (parsed.error) return parsed.error;
+        } catch { /* Continue */ }
+      }
+
+      // Remove generic prefix and return remaining message
+      const cleanedMsg = errorStr
+        .replace(/^Edge Function returned (?:a non-2xx|4\d\d|\d+) status code:?\s*/i, "")
+        .replace(/^Error,?\s*/i, "")
+        .trim();
+
+      if (cleanedMsg && cleanedMsg !== errorStr) return cleanedMsg;
+      return errorStr;
+    }
+
+    // 4. Parse raw message
+    if (rawMessage) {
+      // Try to extract error from JSON in message
+      const match = rawMessage.match(/"error"\s*:\s*"([^"]+)"/);
+      if (match) return match[1];
+
+      // Clean up the message
+      return rawMessage
+        .replace(/^Edge Function returned.*?:\s*/i, "")
+        .replace(/^Error,?\s*/i, "")
+        .trim() || rawMessage;
+    }
+
+    return "Unknown error";
+  };
+
+  // Execute import
+  const executeImport = async () => {
+    // Filter out excluded statements
+    const statementsToExecute = proposedSQL.filter((_, i) => !excludedStatements.has(i));
+    if (statementsToExecute.length === 0) return;
+
+    // Calculate total rows for accurate progress tracking
+    const calculateTotalRows = () => {
+      if (fileType === "json" && jsonData && jsonData.tables.length > 1) {
+        return Array.from(selectedRowsByTable.values()).reduce((sum, set) => sum + set.size, 0);
+      }
+      return selectedDataRows.length;
+    };
+
+    const totalRows = calculateTotalRows();
+
+    setExecutionProgress({
+      currentBatch: 0,
+      totalBatches: statementsToExecute.length,
+      rowsCompleted: 0,
+      totalRows,
+      currentStatement: "",
+      status: "running",
+      errors: [],
+      startTime: Date.now()
+    });
+
+    // Check if we should use batch execution for true transaction support
+    const hasTransactionStatements = statementsToExecute.some(s =>
+      s.type === "BEGIN_TRANSACTION" || s.type === "COMMIT_TRANSACTION"
+    );
+
+    // Use batch execution when:
+    // 1. Transaction statements are present (for CREATE TABLE + INSERT rollback), OR
+    // 2. rollbackOnFailure is true
+    if (hasTransactionStatements || rollbackOnFailure) {
+      // Filter out BEGIN/COMMIT statements - the edge function handles them
+      const batchStatements = statementsToExecute
+        .filter(s => s.type !== "BEGIN_TRANSACTION" && s.type !== "COMMIT_TRANSACTION")
+        .map(s => ({ sql: s.sql, description: s.description }));
+
+      setExecutionProgress(prev => prev ? {
+        ...prev,
+        currentStatement: "Executing all statements in transaction...",
+        currentBatch: 1
+      } : null);
+
+      const body: any = {
+        action: "execute_sql_batch",
+        shareToken,
+        statements: batchStatements,
+        wrapInTransaction: true
+      };
+      if (databaseId) body.databaseId = databaseId;
+      if (connectionId) body.connectionId = connectionId;
+
+      try {
+        const { data, error } = await pronghornApi.functions.invoke("manage-database", { body });
+
+        if (error || !data?.success) {
+          const errorMsg = extractRealError(data, error);
+
+          // Find which statement failed from data.results
+          const failedResult = data?.results?.find((r: any) => !r.success);
+          const failedIndex = failedResult?.index ?? 0;
+          const failedDescription = failedResult?.description || batchStatements[failedIndex]?.description || "Unknown statement";
+
+          setExecutionProgress(prev => prev ? {
+            ...prev,
+            status: "error",
+            currentStatement: failedDescription,
+            errors: [{
+              row: failedIndex,
+              error: failedResult?.error || errorMsg,
+              sql: failedResult?.sql || batchStatements[failedIndex]?.sql,
+              description: failedDescription
+            }]
+          } : null);
+
+          toast.error(`Import failed and rolled back: ${failedResult?.error || errorMsg}`);
+          return;
+        }
+
+        // All succeeded - capture migrations for DDL statements
+        for (const result of data.results || []) {
+          if (result.success && (databaseId || connectionId)) {
+            const ddlStatements = extractDDLStatements(result.sql);
+            for (const ddl of ddlStatements) {
+              try {
+                await pronghornApi.rpc("insert_migration_with_token", {
+                  p_database_id: databaseId || null,
+                  p_connection_id: connectionId || null,
+                  p_sql_content: ddl.sql,
+                  p_statement_type: ddl.statementType,
+                  p_object_type: ddl.objectType,
+                  p_token: shareToken || null,
+                  p_object_schema: ddl.objectSchema || schema,
+                  p_object_name: ddl.objectName,
+                });
+              } catch (e) {
+                console.error("Failed to capture migration:", e);
+              }
+            }
+          }
+        }
+
+        setExecutionProgress(prev => prev ? {
+          ...prev,
+          status: "completed",
+          rowsCompleted: totalRows,
+          currentBatch: batchStatements.length,
+          totalBatches: batchStatements.length,
+          errors: []
+        } : null);
+
+        toast.success(`Import completed successfully! ${batchStatements.length} statements executed in transaction.`);
+        return;
+
+      } catch (e: any) {
+        const errorMsg = extractRealError(null, null, e.message);
+        setExecutionProgress(prev => prev ? {
+          ...prev,
+          status: "error",
+          errors: [{ row: 0, error: errorMsg }]
+        } : null);
+        toast.error(`Import failed: ${errorMsg}`);
+        return;
+      }
+    }
+
+    // Individual execution mode (no transaction/rollback)
+    const errors: { row: number; error: string; sql?: string; description?: string }[] = [];
+    let successfulStatements = 0;
+    let rowsInserted = 0;
+
+    for (let i = 0; i < statementsToExecute.length; i++) {
+      if (isPaused) {
+        setExecutionProgress(prev => prev ? { ...prev, status: "paused" } : null);
+        return;
+      }
+
+      const stmt = statementsToExecute[i];
+
+      setExecutionProgress(prev => prev ? {
+        ...prev,
+        currentBatch: i + 1,
+        currentStatement: stmt.description
+      } : null);
+
+      try {
+        const body: any = {
+          action: "execute_sql",
+          shareToken,
+          sql: stmt.sql
+        };
+        if (databaseId) body.databaseId = databaseId;
+        if (connectionId) body.connectionId = connectionId;
+
+        const { data, error } = await pronghornApi.functions.invoke("manage-database", { body });
+
+        if (error || !data?.success) {
+          const errorMsg = extractRealError(data, error);
+          errors.push({
+            row: i,
+            error: errorMsg,
+            sql: stmt.sql,
+            description: stmt.description
+          });
+          console.error(`Statement ${i + 1} failed:`, errorMsg, "\nSQL:", stmt.sql);
+        } else {
+          successfulStatements++;
+
+          // Capture DDL statements as migrations (same as SQL Query Editor)
+          if (databaseId || connectionId) {
+            const ddlStatements = extractDDLStatements(stmt.sql);
+            for (const ddl of ddlStatements) {
+              try {
+                await pronghornApi.rpc("insert_migration_with_token", {
+                  p_database_id: databaseId || null,
+                  p_connection_id: connectionId || null,
+                  p_sql_content: ddl.sql,
+                  p_statement_type: ddl.statementType,
+                  p_object_type: ddl.objectType,
+                  p_token: shareToken || null,
+                  p_object_schema: ddl.objectSchema || schema,
+                  p_object_name: ddl.objectName,
+                });
+                console.log(`Migration captured: ${ddl.statementType} ${ddl.objectType} ${ddl.objectName}`);
+              } catch (e) {
+                console.error("Failed to capture migration:", e);
+              }
+            }
+          }
+
+          // Track INSERT progress - extract row count from description
+          if (stmt.type === "INSERT") {
+            const match = stmt.description.match(/rows (\d+)-(\d+) of (\d+)/);
+            if (match) {
+              const endRow = parseInt(match[2], 10);
+              rowsInserted = Math.max(rowsInserted, endRow);
+              setExecutionProgress(prev => prev ? {
+                ...prev,
+                rowsCompleted: rowsInserted
+              } : null);
+            }
+          }
+        }
+      } catch (e: any) {
+        const errorMsg = extractRealError(null, null, e.message);
+        errors.push({
+          row: i,
+          error: errorMsg,
+          sql: stmt.sql,
+          description: stmt.description
+        });
+        console.error(`Statement ${i + 1} exception:`, errorMsg, "\nSQL:", stmt.sql);
+      }
+    }
+
+    // Final status update
+    const finalStatus = errors.length > 0 ? "error" : "completed";
+    setExecutionProgress(prev => prev ? {
+      ...prev,
+      status: finalStatus,
+      errors,
+      rowsCompleted: errors.length === 0 ? totalRows : rowsInserted
+    } : null);
+
+    if (errors.length === 0) {
+      toast.success(`Import completed successfully! ${successfulStatements} statements executed.`);
+    } else {
+      toast.error(`Import failed: ${errors.length} of ${statementsToExecute.length} statements failed`);
+    }
+  };
+
+  // Re-execute all statements from scratch
+  const handleReExecute = () => {
+    setExecutionProgress(null);
+    setIsPaused(false);
+    executeImport();
+  };
+
+  // Retry only failed statements
+  const handleRetryFailed = () => {
+    if (!executionProgress) return;
+
+    // Get indices of failed statements (in the filtered list)
+    const failedIndices = new Set(executionProgress.errors.map(e => e.row));
+
+    // We need to find the original indices in proposedSQL
+    proposedSQL.filter((_, i) => !excludedStatements.has(i));
+
+    // Mark successful statements as excluded
+    const newExcluded = new Set(excludedStatements);
+    let filteredIdx = 0;
+    proposedSQL.forEach((_, originalIdx) => {
+      if (!excludedStatements.has(originalIdx)) {
+        // This statement was executed
+        if (!failedIndices.has(filteredIdx)) {
+          // It succeeded, so exclude it from next run
+          newExcluded.add(originalIdx);
+        }
+        filteredIdx++;
+      }
+    });
+
+    setExcludedStatements(newExcluded);
+    setExecutionProgress(null);
+    setIsPaused(false);
+
+    // Need to trigger re-execution after state update
+    setTimeout(() => executeImport(), 0);
+  };
+
+  const renderStepContent = () => {
+    switch (currentStep) {
+      case "upload":
+        return (
+          <div className="space-y-6">
+            <FileUploader onFileUploaded={handleFileUploaded} />
+            {(excelData || jsonData) && (
+              <div className="rounded-lg border border-border bg-muted/50 p-4">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  {fileType === "json" ? <FileJson className="h-4 w-4" /> : <FileSpreadsheet className="h-4 w-4" />}
+                  <span>
+                    {fileType === "json"
+                      ? `${jsonData?.tables.length} table(s) detected, ${jsonData?.totalRows} total rows`
+                      : `${excelData?.sheets.length} sheet(s), ${excelData?.sheets.reduce((acc, s) => acc + s.rows.length, 0)} total rows`
+                    }
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+
+      case "normalize":
+        // Only shown for JSON files
+        return (
+          <div className="h-full overflow-auto">
+            <JsonNormalizationSelector
+              structure={jsonStructure}
+              strategy={normalizationStrategy}
+              onStrategyChange={setNormalizationStrategy}
+              customPaths={customTablePaths}
+              onCustomPathsChange={setCustomTablePaths}
+              schemaStats={schemaStats || undefined}
+            />
+          </div>
+        );
+
+      case "clean":
+        return (
+          <div className="h-full flex flex-col">
+            {fileType === "json" && jsonData ? (
+              <JsonDataViewer
+                data={jsonData}
+                selectedTable={selectedJsonTable}
+                onTableChange={setSelectedJsonTable}
+                selectedRowsByTable={selectedRowsByTable}
+                onSelectedRowsByTableChange={setSelectedRowsByTable}
+              />
+            ) : excelData ? (
+              <ExcelDataGrid
+                sheets={excelData.sheets}
+                selectedSheet={selectedSheet}
+                onSheetChange={setSelectedSheet}
+                headerRow={headerRow}
+                onHeaderRowChange={setHeaderRow}
+                selectedRows={selectedRows}
+                onSelectedRowsChange={setSelectedRows}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                No data to preview
+              </div>
+            )}
+          </div>
+        );
+
+      case "schema":
+        // For multi-table JSON, show all tables
+        {
+          const isMultiTableJson = fileType === "json" && jsonData && jsonData.tables.length > 1;
+          const matchSummary = tableMatches.length > 0 ? getMatchingSummary(tableMatches) : null;
+
+          return (
+            <div className="h-full flex flex-col">
+              {/* Loading indicator for schema fetch */}
+              {loadingSchema && (
+                <div className="flex items-center gap-2 p-3 border rounded-lg bg-muted/50 shrink-0 mb-4">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span className="text-sm text-muted-foreground">Loading database schema...</span>
+                </div>
+              )}
+
+              {/* Match summary for multi-table JSON */}
+              {isMultiTableJson && matchSummary && !loadingSchema && (
+                <div className="flex items-center gap-4 p-3 border rounded-lg bg-muted/30 shrink-0 mb-4">
+                  <span className="text-sm font-medium">Import Summary:</span>
+                  {matchSummary.newTables > 0 && (
+                    <span className="text-xs px-2 py-1 rounded bg-green-500/20 text-green-600 dark:text-green-400">
+                      {matchSummary.newTables} new
+                    </span>
+                  )}
+                  {matchSummary.insertTables > 0 && (
+                    <span className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-600 dark:text-blue-400">
+                      {matchSummary.insertTables} insert
+                    </span>
+                  )}
+                  {matchSummary.augmentTables > 0 && (
+                    <span className="text-xs px-2 py-1 rounded bg-purple-500/20 text-purple-600 dark:text-purple-400">
+                      {matchSummary.augmentTables} augment
+                    </span>
+                  )}
+                  {matchSummary.conflictTables > 0 && (
+                    <span className="text-xs px-2 py-1 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400">
+                      {matchSummary.conflictTables} conflicts
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Sub-tabs for multi-table JSON to give each section full height */}
+              {isMultiTableJson ? (
+                <Tabs value={schemaSubTab} onValueChange={(v) => setSchemaSubTab(v as any)} className="flex-1 flex flex-col min-h-0">
+                  <TabsList className="grid w-full grid-cols-3 shrink-0">
+                    <TabsTrigger value="designer">Schema Designer</TabsTrigger>
+                    <TabsTrigger value="erd">Database ERD</TabsTrigger>
+                    <TabsTrigger value="conflicts">
+                      Matching & Conflicts
+                      {tableMatches.some(m => m.conflicts.length > 0) && (
+                        <span className="ml-1 text-amber-500">•</span>
+                      )}
+                    </TabsTrigger>
+                  </TabsList>
+
+                  {/* Use hidden/block instead of conditional rendering to preserve state */}
+                  <div className={cn("flex-1 mt-4 min-h-0 flex flex-col", schemaSubTab !== "designer" && "hidden")}>
+                    {/* Table selector */}
+                    <div className="flex items-center gap-4 shrink-0 mb-4">
+                      <Label className="text-sm font-medium whitespace-nowrap">Configure Table:</Label>
+                      <Select value={selectedJsonTable} onValueChange={setSelectedJsonTable}>
+                        <SelectTrigger className="w-[300px]">
+                          <SelectValue placeholder="Select a table" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {jsonData.tables.map(t => {
+                            const match = tableMatches.find(m => m.importTable === t.name);
+                            return (
+                              <SelectItem key={t.name} value={t.name}>
+                                {t.name} ({t.rows.length} rows)
+                                {match && match.matchType !== "new" && ` → ${match.existingTable}`}
+                              </SelectItem>
+                            );
+                          })}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {selectedJsonTable && (
+                      <div className="flex-1 min-h-0 overflow-auto border rounded-lg p-4">
+                        <SchemaCreator
+                          key={selectedJsonTable}
+                          headers={headers.filter(h => h !== "_row_id")}
+                          sampleData={memoizedSampleData}
+                          tableName={selectedJsonTable}
+                          onTableNameChange={() => { }}
+                          onTableDefChange={(def) => handleMultiTableDefChange(selectedJsonTable, def)}
+                          schema={schema}
+                          initialColumns={multiTableColumns.get(selectedJsonTable) || undefined}
+                          onColumnsChange={(cols) => setMultiTableColumns(prev => new Map(prev).set(selectedJsonTable, cols))}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className={cn("flex-1 mt-4 min-h-0 flex flex-col", schemaSubTab !== "erd" && "hidden")}>
+                    <DatabaseErdView
+                      existingTables={existingSchemas}
+                      importTables={jsonData.tables}
+                      relationships={jsonData.relationships}
+                      tableMatches={tableMatches}
+                      onTableClick={(name) => {
+                        setSelectedJsonTable(name);
+                        setSchemaSubTab("designer");
+                      }}
+                    />
+                  </div>
+
+                  <div className={cn("flex-1 mt-4 min-h-0 overflow-auto", schemaSubTab !== "conflicts" && "hidden")}>
+                    <ConflictResolutionPanel
+                      matches={tableMatches}
+                      onTableResolutionChange={handleTableResolutionChange}
+                      onConflictResolutionChange={handleConflictResolutionChange}
+                    />
+                  </div>
+                </Tabs>
+              ) : (
+                /* Non-multi-table: show action toggle */
+                <Tabs value={action} onValueChange={(v) => setAction(v as ImportAction)} className="flex-1 flex flex-col min-h-0">
+                  <TabsList className="grid w-full grid-cols-2 shrink-0">
+                    <TabsTrigger value="create_new" className="gap-2">
+                      <Plus className="h-4 w-4" />
+                      Create New Table
+                    </TabsTrigger>
+                    <TabsTrigger value="import_existing" className="gap-2" disabled={existingTables.length === 0}>
+                      <ArrowRight className="h-4 w-4" />
+                      Import to Existing
+                    </TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="create_new" className="flex-1 mt-4 min-h-0 overflow-auto">
+                    <SchemaCreator
+                      headers={headers}
+                      sampleData={memoizedSampleData}
+                      tableName={tableName}
+                      onTableNameChange={setTableName}
+                      onTableDefChange={handleTableDefChange}
+                      schema={schema}
+                      initialColumns={schemaColumns || undefined}
+                      onColumnsChange={setSchemaColumns}
+                    />
+                  </TabsContent>
+
+                  <TabsContent value="import_existing" className="flex-1 mt-4 min-h-0 overflow-auto">
+                    <FieldMapper
+                      sourceHeaders={headers}
+                      targetTables={existingTables}
+                      selectedTable={targetTable || ""}
+                      onTableChange={setTargetTable}
+                      targetColumns={targetColumns}
+                      mappings={columnMappings}
+                      onMappingsChange={setColumnMappings}
+                      enableCasting={enableCasting}
+                      onEnableCastingChange={setEnableCasting}
+                    />
+                  </TabsContent>
+                </Tabs>
+              )}
+            </div>
+          );
+        }
+
+      case "review":
+        return (
+          <div className="h-full flex flex-col">
+            <SqlReviewPanel
+              statements={proposedSQL}
+              reviewed={sqlReviewed}
+              onReviewedChange={setSqlReviewed}
+              excludedStatements={excludedStatements}
+              onExcludedChange={setExcludedStatements}
+            />
+          </div>
+        );
+
+      case "execute":
+        // Calculate total rows for multi-table JSON
+        {
+          const totalRowsToImport = fileType === "json" && jsonData && jsonData.tables.length > 1
+            ? Array.from(selectedRowsByTable.values()).reduce((sum, set) => sum + set.size, 0)
+            : selectedDataRows.length;
+
+          // Check if transaction statements are in the SQL
+          const hasTransactionStatements = proposedSQL.some(s =>
+            s.type === "BEGIN_TRANSACTION" || s.type === "COMMIT_TRANSACTION"
+          );
+
+          return (
+            <div className="h-full flex flex-col">
+              {executionProgress ? (
+                <ImportProgressTracker
+                  progress={executionProgress}
+                  onPause={() => setIsPaused(true)}
+                  onResume={() => { setIsPaused(false); executeImport(); }}
+                  onCancel={() => {
+                    setIsPaused(true);
+                    setExecutionProgress(prev => prev ? { ...prev, status: "error" } : null);
+                  }}
+                  onReExecute={handleReExecute}
+                  onRetryFailed={handleRetryFailed}
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full gap-4">
+                  <Database className="h-16 w-16 text-muted-foreground" />
+                  <h3 className="text-lg font-semibold">Ready to Import</h3>
+                  <p className="text-sm text-muted-foreground text-center max-w-md">
+                    {proposedSQL.length} SQL statements will be executed to import {totalRowsToImport} rows
+                    {fileType === "json" && jsonData && jsonData.tables.length > 1 && ` across ${jsonData.tables.length} tables`}.
+                  </p>
+
+                  {/* Transaction control */}
+                  {hasTransactionStatements && (
+                    <div className="flex items-center gap-2 p-3 rounded-lg border border-border bg-muted/50">
+                      <ShieldCheck className="h-4 w-4 text-primary" />
+                      <span className="text-sm text-muted-foreground">
+                        Transaction mode enabled - all changes will rollback on any failure
+                      </span>
+                    </div>
+                  )}
+
+                  {!hasTransactionStatements && fileType === "json" && jsonData && jsonData.tables.length > 1 && (
+                    <div className="flex items-center gap-2 p-3 rounded-lg border border-border bg-muted/50">
+                      <Checkbox
+                        id="rollbackOnFailure"
+                        checked={rollbackOnFailure}
+                        onCheckedChange={(checked) => setRollbackOnFailure(checked === true)}
+                      />
+                      <Label htmlFor="rollbackOnFailure" className="text-sm cursor-pointer">
+                        Rollback all changes if any statement fails
+                      </Label>
+                    </div>
+                  )}
+
+                  <Button onClick={executeImport} size="lg">
+                    Start Import
+                  </Button>
+                </div>
+              )}
+            </div>
+          );
+        }
+
+      default:
+        return null;
+    }
+  };
+
+  // Check if a step can be navigated to (for forward navigation)
+  const canNavigateToStep = (stepIndex: number): boolean => {
+    if (stepIndex === currentStepIndex) return true;
+    if (stepIndex < currentStepIndex) return executionProgress?.status !== "running";
+    // For forward navigation, check if current step can proceed
+    if (stepIndex === currentStepIndex + 1) return canProceed();
+    return false;
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="w-[90vw] h-[90vh] max-w-none flex flex-col">
+        <DialogHeader className="shrink-0">
+          <DialogTitle className="flex items-center gap-2">
+            <Database className="h-5 w-5" />
+            Import Data
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* Progress Steps */}
+        <div className="flex items-center justify-between px-2 py-4 border-b border-border shrink-0">
+          {STEPS.map((step, index) => {
+            const isActive = step.key === currentStep;
+            const isCompleted = index < currentStepIndex;
+            // Can navigate to completed steps, current step, or next step if canProceed
+            const canNavigate = canNavigateToStep(index) && step.key !== currentStep;
+
+            const handleStepClick = () => {
+              if (canNavigate) {
+                // If navigating forward to review, generate SQL
+                if (step.key === "review" && index > currentStepIndex) {
+                  if (fileType === "json" && jsonData && jsonData.tables.length > 1) {
+                    // Multi-table JSON import - use smart import if we have matches
+                    if (tableMatches.length > 0 && existingSchemas.length > 0) {
+                      const statements = generateSmartImportSQL(
+                        jsonData.tables,
+                        jsonData.relationships,
+                        tableMatches,
+                        existingSchemas,
+                        schema,
+                        selectedRowsByTable,
+                        tableDefsMap,
+                        { wrapInTransaction: rollbackOnFailure }
+                      );
+                      setProposedSQL(statements);
+                    } else {
+                      // Fallback to regular multi-table import
+                      const statements = generateMultiTableImportSQL(
+                        jsonData.tables,
+                        jsonData.relationships,
+                        schema,
+                        selectedRowsByTable,
+                        tableDefsMap
+                      );
+                      setProposedSQL(statements);
+                    }
+                    setSqlReviewed(false);
+                  } else if (action === "create_new" && tableDef) {
+                    const batchSize = calculateBatchSize(tableDef.columns.length, selectedDataRows.length);
+                    const statements = generateFullImportSQL(tableDef, selectedDataRows, batchSize, { wrapInTransaction: rollbackOnFailure });
+                    setProposedSQL(statements);
+                    setSqlReviewed(false);
+                  } else if (action === "import_existing" && targetTable && columnMappings.length > 0) {
+                    const statements = generateExistingTableInsertSQL(
+                      targetTable,
+                      schema,
+                      headers,
+                      columnMappings,
+                      selectedDataRows,
+                      enableCasting,
+                      targetColumns
+                    );
+                    setProposedSQL(statements);
+                    setSqlReviewed(false);
+                  }
+                }
+                setCurrentStep(step.key);
+              }
+            };
+
+            return (
+              <React.Fragment key={step.key}>
+                <button
+                  type="button"
+                  onClick={handleStepClick}
+                  disabled={!canNavigate}
+                  className={cn(
+                    "flex items-center gap-2 transition-opacity",
+                    canNavigate && "cursor-pointer hover:opacity-80",
+                    !canNavigate && "cursor-default"
+                  )}
+                >
+                  <div className={cn(
+                    "flex items-center justify-center w-8 h-8 rounded-full border-2 transition-colors",
+                    isActive && "border-primary bg-primary text-primary-foreground",
+                    isCompleted && "border-primary bg-primary/20 text-primary",
+                    !isActive && !isCompleted && "border-muted-foreground/30 text-muted-foreground"
+                  )}>
+                    {isCompleted ? <Check className="h-4 w-4" /> : step.icon}
+                  </div>
+                  <span className={cn(
+                    "text-sm font-medium hidden sm:inline",
+                    isActive && "text-primary",
+                    !isActive && "text-muted-foreground"
+                  )}>
+                    {step.label}
+                  </span>
+                </button>
+                {index < STEPS.length - 1 && (
+                  <div className={cn("flex-1 h-0.5 mx-2", isCompleted ? "bg-primary" : "bg-muted-foreground/30")} />
+                )}
+              </React.Fragment>
+            );
+          })}
+        </div>
+
+        {/* Step Content */}
+        <div className="flex-1 overflow-y-auto py-4 min-h-0">
+          {renderStepContent()}
+        </div>
+
+        {/* Navigation Footer */}
+        <div className="flex items-center justify-between pt-4 border-t border-border shrink-0">
+          <Button variant="outline" onClick={goBack} disabled={!canGoBack}>
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Back
+          </Button>
+          <div className="text-sm text-muted-foreground">Step {currentStepIndex + 1} of {STEPS.length}</div>
+          {currentStep === "execute" ? (
+            <Button onClick={() => { onImportComplete?.(); handleOpenChange(false); }} disabled={executionProgress?.status !== "completed"}>
+              Done
+            </Button>
+          ) : (
+            <Button onClick={goNext} disabled={!canProceed()}>
+              Next
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

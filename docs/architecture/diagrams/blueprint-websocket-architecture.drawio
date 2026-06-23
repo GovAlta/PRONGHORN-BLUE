@@ -1,0 +1,117 @@
+<mxfile host="draw.io">
+  <diagram name="WebSocket Architecture" id="ws-arch">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="&lt;b&gt;Pronghorn — Real-Time WebSocket Architecture&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="300" y="20" width="600" height="35" as="geometry" />
+        </mxCell>
+
+        <!-- React Components -->
+        <mxCell id="comp1" value="&lt;b&gt;React Component&lt;/b&gt;&lt;br&gt;useRealtime hook&lt;br&gt;(auto-reconnect)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=12;shadow=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="100" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="comp2" value="&lt;b&gt;React Component&lt;/b&gt;&lt;br&gt;useRealtime hook&lt;br&gt;(auto-reconnect)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=12;shadow=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="200" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="comp3" value="&lt;b&gt;Deployment Poller&lt;/b&gt;&lt;br&gt;(backend internal)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=12;shadow=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="310" width="180" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- WSS Connection -->
+        <mxCell id="wss-box" value="&lt;b&gt;WSS Connection&lt;/b&gt;&lt;br&gt;wss://host/ws?token=JWT&lt;br&gt;or Authorization: Bearer header" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F7FA;strokeColor=#00838F;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="330" y="150" width="240" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows from components to WSS -->
+        <mxCell id="c1-wss" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#00838F;strokeWidth=2;" edge="1" source="comp1" target="wss-box" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="c2-wss" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#00838F;strokeWidth=2;" edge="1" source="comp2" target="wss-box" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- WebSocket Server -->
+        <mxCell id="ws-server" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;strokeWidth=2;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="660" y="80" width="490" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="ws-title" value="&lt;b&gt;WebSocket Server&lt;/b&gt; (ws library)" style="text;html=1;align=left;fontSize=14;fontColor=#2E7D32;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="680" y="90" width="350" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Auth Layer -->
+        <mxCell id="auth-layer" value="&lt;b&gt;JWT Auth on Handshake&lt;/b&gt;&lt;br&gt;Validates Azure AD JWT (ENTRA_TENANT_ID + CLIENT_ID)&lt;br&gt;Dev mode: allows unauthenticated (NODE_ENV=development)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;strokeWidth=2;arcSize=8;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="690" y="125" width="430" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Channel Manager -->
+        <mxCell id="channel-mgr" value="&lt;b&gt;Channel Manager&lt;/b&gt;&lt;br&gt;subscribe / unsubscribe / broadcast" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;arcSize=10;shadow=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="690" y="210" width="320" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Message Types -->
+        <mxCell id="msg-types" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#9E9E9E;strokeWidth=1;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="690" y="290" width="430" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="msg-title" value="&lt;b&gt;Message Types&lt;/b&gt;" style="text;html=1;align=left;fontSize=12;fontColor=#616161;" vertex="1" parent="1">
+          <mxGeometry x="700" y="295" width="150" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="msg-sub" value="&lt;b&gt;subscribe&lt;/b&gt;&lt;br&gt;Join channel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#43A047;strokeWidth=1;arcSize=8;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="700" y="320" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="msg-unsub" value="&lt;b&gt;unsubscribe&lt;/b&gt;&lt;br&gt;Leave channel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;strokeWidth=1;arcSize=8;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="830" y="320" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="msg-broadcast" value="&lt;b&gt;broadcast&lt;/b&gt;&lt;br&gt;Fan-out to channel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;strokeWidth=1;arcSize=8;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="700" y="375" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="msg-ping" value="&lt;b&gt;ping / pong&lt;/b&gt;&lt;br&gt;Keepalive" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;strokeWidth=1;arcSize=8;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="830" y="375" width="120" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- Heartbeat -->
+        <mxCell id="heartbeat" value="&lt;b&gt;Heartbeat&lt;/b&gt;&lt;br&gt;30s interval&lt;br&gt;Dead clients terminated" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFECB3;strokeColor=#FFB300;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="690" y="460" width="200" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Health Endpoint -->
+        <mxCell id="health" value="&lt;b&gt;/ws/health&lt;/b&gt;&lt;br&gt;Connection stats&lt;br&gt;getWsStats()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F7FA;strokeColor=#00838F;strokeWidth=2;arcSize=10;shadow=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="920" y="460" width="190" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Channel example -->
+        <mxCell id="channels" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#9C27B0;strokeWidth=1;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="690" y="545" width="430" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="ch-title" value="&lt;b&gt;Example Channels&lt;/b&gt;" style="text;html=1;align=left;fontSize=11;fontColor=#6A1B9A;" vertex="1" parent="1">
+          <mxGeometry x="700" y="548" width="150" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="ch1" value="deployment:proj-123" style="rounded=1;fillColor=#E1BEE7;strokeColor=#8E24AA;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="700" y="572" width="130" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="ch2" value="collaboration:session-456" style="rounded=1;fillColor=#E1BEE7;strokeColor=#8E24AA;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="845" y="572" width="155" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="ch3" value="canvas:proj-789" style="rounded=1;fillColor=#E1BEE7;strokeColor=#8E24AA;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1015" y="572" width="100" height="28" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows -->
+        <mxCell id="wss-auth" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#43A047;strokeWidth=2;" edge="1" source="wss-box" target="auth-layer" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="poller-ws" value="broadcast()" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;strokeWidth=2;dashed=1;fontSize=9;fontColor=#666;" edge="1" source="comp3" target="channel-mgr" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="500" y="340" />
+              <mxPoint x="500" y="235" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

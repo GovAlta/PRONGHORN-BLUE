@@ -1,0 +1,42 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Pronghorn Application Database (system metadata, users, projects table)
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pronghorn_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev123}
+      POSTGRES_DB: ${POSTGRES_DB:-pronghorn}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pronghorn_db_data:/var/lib/postgresql/data
+      - ./infra/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pronghorn_admin} -d ${POSTGRES_DB:-pronghorn}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Pronghorn Generated Applications Database (per-project databases: proj_*)
+  # ---------------------------------------------------------------------------
+  db-generated-apps:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_GENAPPS_USER:-pronghorn_genapps_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_GENAPPS_PASSWORD:-localdev123}
+    ports:
+      - "${POSTGRES_GENAPPS_PORT:-5433}:5432"
+    volumes:
+      - pronghorn_genapps_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_GENAPPS_USER:-pronghorn_genapps_admin}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pronghorn_db_data:
+  pronghorn_genapps_db_data:

@@ -1,0 +1,82 @@
+﻿<policies>
+    <inbound>
+        <base />
+        <cors allow-credentials="true">
+            <allowed-origins>
+                <origin>https://pronghorn.blue</origin>
+                <origin>https://ca-pronghorn-frontend.<env-suffix>.canadacentral.azurecontainerapps.io</origin>
+                <origin>http://localhost:5173</origin>
+                <origin>http://localhost:8080</origin>
+            </allowed-origins>
+            <allowed-methods>
+                <method>*</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>*</header>
+            </allowed-headers>
+            <expose-headers>
+                <header>*</header>
+            </expose-headers>
+        </cors>
+        <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized. Access token is missing or invalid." require-scheme="Bearer">
+            <openid-config url="https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0/.well-known/openid-configuration" />
+            <audiences>
+                <audience>22222222-2222-2222-2222-222222222222</audience>
+            </audiences>
+            <issuers>
+                <issuer>https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0</issuer>
+            </issuers>
+        </validate-jwt>
+        <set-header name="X-User-Id" exists-action="override">
+            <value>@{
+                var authHeader = context.Request.Headers.GetValueOrDefault("Authorization", "");
+                if (string.IsNullOrEmpty(authHeader)) { return ""; }
+                var token = authHeader.Split(' ').Last();
+                var jwt = token.AsJwt();
+                if (jwt == null) { return ""; }
+                return jwt.Claims.GetValueOrDefault("oid", jwt.Claims.GetValueOrDefault("sub", ""));
+            }</value>
+        </set-header>
+        <set-header name="X-User-Email" exists-action="override">
+            <value>@{
+                var authHeader = context.Request.Headers.GetValueOrDefault("Authorization", "");
+                if (string.IsNullOrEmpty(authHeader)) { return ""; }
+                var token = authHeader.Split(' ').Last();
+                var jwt = token.AsJwt();
+                if (jwt == null) { return ""; }
+                return jwt.Claims.GetValueOrDefault("preferred_username", jwt.Claims.GetValueOrDefault("email", ""));
+            }</value>
+        </set-header>
+        <set-header name="X-User-Name" exists-action="override">
+            <value>@{
+                var authHeader = context.Request.Headers.GetValueOrDefault("Authorization", "");
+                if (string.IsNullOrEmpty(authHeader)) { return ""; }
+                var token = authHeader.Split(' ').Last();
+                var jwt = token.AsJwt();
+                if (jwt == null) { return ""; }
+                return jwt.Claims.GetValueOrDefault("name", "");
+            }</value>
+        </set-header>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+        <!-- Return CORS headers on error responses so browsers see the real status code
+             instead of a misleading CORS error when JWT validation fails -->
+        <set-header name="Access-Control-Allow-Origin" exists-action="override">
+            <value>@{
+                var origin = context.Request.Headers.GetValueOrDefault("Origin", "");
+                var allowed = new [] { "https://pronghorn.blue", "https://api.pronghorn.blue", "https://ca-pronghorn-frontend.<env-suffix>.canadacentral.azurecontainerapps.io", "http://localhost:5173", "http://localhost:8080" };
+                return Array.Exists(allowed, o => o == origin) ? origin : "";
+            }</value>
+        </set-header>
+        <set-header name="Access-Control-Allow-Credentials" exists-action="override">
+            <value>true</value>
+        </set-header>
+    </on-error>
+</policies>

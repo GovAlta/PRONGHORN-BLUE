@@ -1,0 +1,52 @@
+<policies>
+    <inbound>
+        <base />
+        <cors allow-credentials="true">
+            <allowed-origins>
+                <origin>https://ca-pronghorn-frontend.<env-suffix>.canadacentral.azurecontainerapps.io</origin>
+                <origin>http://localhost:5173</origin>
+            </allowed-origins>
+            <allowed-methods><method>*</method></allowed-methods>
+            <allowed-headers><header>*</header></allowed-headers>
+        </cors>
+        <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized" require-scheme="Bearer">
+            <openid-config url="https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0/.well-known/openid-configuration" />
+            <audiences><audience>22222222-2222-2222-2222-222222222222</audience></audiences>
+        </validate-jwt>
+        <set-header name="X-User-Id" exists-action="override">
+            <value>@{
+                var authHeader = context.Request.Headers.GetValueOrDefault("Authorization", "");
+                if (string.IsNullOrEmpty(authHeader)) { return ""; }
+                var token = authHeader.Split(' ').Last();
+                var jwt = token.AsJwt();
+                if (jwt == null) { return ""; }
+                return jwt.Claims.GetValueOrDefault("oid", jwt.Claims.GetValueOrDefault("sub", ""));
+            }</value>
+        </set-header>
+        <set-header name="X-User-Email" exists-action="override">
+            <value>@{
+                var authHeader = context.Request.Headers.GetValueOrDefault("Authorization", "");
+                if (string.IsNullOrEmpty(authHeader)) { return ""; }
+                var token = authHeader.Split(' ').Last();
+                var jwt = token.AsJwt();
+                if (jwt == null) { return ""; }
+                return jwt.Claims.GetValueOrDefault("preferred_username", jwt.Claims.GetValueOrDefault("email", ""));
+            }</value>
+        </set-header>
+    </inbound>
+    <backend><base /></backend>
+    <outbound><base /></outbound>
+    <on-error>
+        <base />
+        <set-header name="Access-Control-Allow-Origin" exists-action="override">
+            <value>@{
+                var origin = context.Request.Headers.GetValueOrDefault("Origin", "");
+                var allowed = new [] { "https://pronghorn.blue","https://api.pronghorn.blue", "https://ca-pronghorn-frontend.<env-suffix>.canadacentral.azurecontainerapps.io", "http://localhost:5173", "http://localhost:8080" };
+                return Array.Exists(allowed, o => o == origin) ? origin : "";
+            }</value>
+        </set-header>
+        <set-header name="Access-Control-Allow-Credentials" exists-action="override">
+            <value>true</value>
+        </set-header>
+    </on-error>
+</policies>

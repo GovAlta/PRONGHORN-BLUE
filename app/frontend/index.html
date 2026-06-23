@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    
+    <!-- Primary Meta Tags -->
+    <title>Pronghorn - AI-Powered Enterprise Application Platform</title>
+    <meta name="title" content="Pronghorn - AI-Powered Enterprise Application Platform">
+    <meta name="description" content="Transform unstructured requirements into traceable, compliant applications with Pronghorn's standards-first, agentic AI platform.">
+    <meta name="author" content="Pronghorn" />
+    <meta name="keywords" content="AI, enterprise, application platform, requirements management, compliance, software development, agentic AI">
+    <meta name="robots" content="index, follow">
+    <!-- Canonical and Open Graph URLs are injected dynamically -->
+    
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Pronghorn">
+    <meta name="application-name" content="Pronghorn">
+    <meta name="msapplication-TileColor" content="#0a0a0a">
+    <meta name="msapplication-config" content="/browserconfig.xml">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Pronghorn - AI-Powered Enterprise Application Platform">
+    <meta property="og:description" content="Transform unstructured requirements into traceable, compliant applications with Pronghorn's standards-first, agentic AI platform.">
+    <meta property="og:image" content="/og-image.png">
+    <meta property="og:site_name" content="Pronghorn">
+    <meta property="og:locale" content="en_US">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Pronghorn - AI-Powered Enterprise Application Platform">
+    <meta name="twitter:description" content="Transform unstructured requirements into traceable, compliant applications with Pronghorn's standards-first, agentic AI platform.">
+    <meta name="twitter:image" content="/og-image.png">
+    
+    <!-- Favicon and Icons -->
+    <link rel="icon" href="/pronghorn-favicon.png" type="image/png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/pwa-512x512.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    
+    <!-- Manifest -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    
+    <!-- Dynamic URL injection for SEO -->
+    <script>
+      (function() {
+        var baseUrl = window.location.origin;
+        var currentUrl = window.location.href;
+        
+        // Create and inject canonical link
+        var canonical = document.createElement('link');
+        canonical.rel = 'canonical';
+        canonical.href = currentUrl;
+        document.head.appendChild(canonical);
+        
+        // Create and inject og:url
+        var ogUrl = document.createElement('meta');
+        ogUrl.setAttribute('property', 'og:url');
+        ogUrl.content = currentUrl;
+        document.head.appendChild(ogUrl);
+        
+        // Create and inject twitter:url
+        var twitterUrl = document.createElement('meta');
+        twitterUrl.setAttribute('name', 'twitter:url');
+        twitterUrl.content = currentUrl;
+        document.head.appendChild(twitterUrl);
+        
+        // Update og:image and twitter:image with full URLs
+        var ogImage = document.querySelector('meta[property="og:image"]');
+        if (ogImage && ogImage.content.startsWith('/')) {
+          ogImage.content = baseUrl + ogImage.content;
+        }
+        var twitterImage = document.querySelector('meta[name="twitter:image"]');
+        if (twitterImage && twitterImage.content.startsWith('/')) {
+          twitterImage.content = baseUrl + twitterImage.content;
+        }
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

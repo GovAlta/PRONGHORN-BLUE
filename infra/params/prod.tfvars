@@ -1,0 +1,320 @@
+# =============================================================================
+# PBMM Landing Zone Environment Variables - PROD
+# =============================================================================
+# PBMM-compliant configuration for the PROD environment. Deployed by pushing to
+# the `prod` branch (deploy.yml selects params/prod.tfvars and GitHub
+# Environment `prod`).
+#
+# INSTRUCTIONS:
+#   1. Replace EVERY value marked with "REPLACE:" using inputs from your
+#      platform / connectivity team (see docs/PBMM_DEPLOYMENT.md §2).
+#   2. Sensitive variables (password, secrets) are injected via -var flags at
+#      workflow runtime from GitHub Environment secrets. Do NOT add secrets here.
+#   3. Host-dependent values (allowed_origins, Entra/OAuth
+#      redirect URIs) are "two-pass": leave the placeholders for the first apply,
+#      then patch with the real frontend FQDN and redeploy (see §9.5).
+#   4. Environment-specific values (subscription, subnet/DNS IDs, URL overrides)
+#      are injected from GitHub Environment Variables as TF_VAR_*, not set here.
+#      See docs/PBMM_DEPLOYMENT.md §6.0 for the required variable list.
+#
+# Usage:
+#   terraform plan  -var-file="params/prod.tfvars"
+#   terraform apply -var-file="params/prod.tfvars"
+# =============================================================================
+
+# ── Azure Configuration ──────────────────────────────────────────────────────
+
+resource_group_name = "goa-cc-pronghorn_prod-rg"
+location            = "canadacentral"
+project_name        = "pronghorn"
+environment         = "prod"
+archetype           = "corp" # corp = PBMM landing zone with VNet/PE/private networking
+
+# ── Central Private DNS (PBMM / vWAN hub) ────────────────────────────────────
+# Two supported modes:
+#
+# (A) Azure Policy delegation (typical PBMM, e.g. GoA). The landing zone attaches
+#     private DNS zone groups out-of-band via a DeployIfNotExists policy and the
+#     deploying identity has NO access to the central DNS subscription. Set the
+#     toggle true and leave the central_dns_* values empty:
+delegate_private_dns_to_policy = true
+#
+# (B) Terraform-resolved central zones. The deploying identity CAN read the
+#     central privatelink.* zones. Set the toggle false and supply the IDs:
+#       delegate_private_dns_to_policy  = false
+#       central_dns_subscription_id     = "REPLACE: connectivity subscription GUID"
+#       central_dns_resource_group_name = "private-dns-rg"
+
+# Wait for Azure Policy to attach DNS zone groups to private endpoints
+private_endpoint_dns_wait = {
+  enabled  = true
+  timeout  = "25m"
+  interval = "10s"
+}
+
+# DNS registration wait (minutes) for central DNS propagation
+dns_registration_wait_minutes = 20
+
+# ── PostgreSQL Configuration ─────────────────────────────────────────────────
+postgresql_server_name   = "goa-cc-prongblue-prod-pbmm-psql"
+postgresql_database_name = "pronghorn"
+administrator_login      = "gaea"
+# Password: injected via -var=administrator_password at runtime
+postgresql_version    = "16"
+postgresql_sku_name   = "GP_Standard_D4s_v3" # Production: General Purpose (4 vCore)
+postgresql_storage_mb = 131072               # 128 GB
+
+# PostgreSQL VNet injection (server deployed inside delegated subnet)
+# private_dns_zone_id is resolved automatically via central_dns when
+# central_dns_subscription_id is set.
+
+# Alternatively, use Private Endpoint mode (uncomment and set):
+# postgresql_private_endpoint_subnet_id = "REPLACE: /subscriptions/.../subnets/private-endpoints"
+
+# ── Security Settings ────────────────────────────────────────────────────────
+enable_development_access = false # NEVER enable in production
+# Zone-redundant HA standby provisioning can intermittently fail during the first
+# create (Azure masks the cause behind a ServerDropping auto-rollback). If you hit
+# this, bring the server up single-zone first (enable_high_availability = false),
+# then re-enable HA on the live server in a follow-up apply. standby_availability_zone
+# is retained so re-enabling is a one-line change.
+enable_high_availability         = true # Zone-redundant HA (set false if first create fails — see note)
+postgresql_disable_public_access = true # PBMM: public access disabled (uses VNet/PE)
+availability_zone                = "1"  # Primary in zone 1
+standby_availability_zone        = "2"  # Standby must differ from primary for ZoneRedundant HA
+
+# ── PostgreSQL Generated Applications Server ─────────────────────────────────
+postgresql_genapps_server_name         = "goa-cc-prongblue-prod-genapps-psql"
+postgresql_genapps_database_name       = "genapps_default"
+postgresql_genapps_administrator_login = "gaea"
+# Password: injected via -var=postgresql_genapps_administrator_password at runtime
+postgresql_genapps_version                      = "16"
+postgresql_genapps_sku_name                     = "GP_Standard_D4s_v3" # Production: General Purpose (4 vCore)
+postgresql_genapps_storage_mb                   = 131072               # 128 GB
+postgresql_genapps_disable_public_access        = true                 # PBMM: public access disabled (uses VNet/PE)
+postgresql_genapps_availability_zone            = "1"                  # Zone 1 (portable across all Canadian regions)
+postgresql_genapps_enable_high_availability     = true                 # Zone-redundant HA for production
+postgresql_genapps_backup_retention_days        = 35                   # Maximum retention for production
+postgresql_genapps_geo_redundant_backup_enabled = true                 # Geo-redundant backup for DR
+postgresql_genapps_maintenance_day              = 3                    # Wednesday — stagger from app server (Sunday)
+postgresql_genapps_maintenance_hour             = 4                    # 04:00 UTC — stagger from app server (02:00 UTC)
+# Alternatively, use Private Endpoint mode (uncomment and set):
+# postgresql_genapps_private_endpoint_subnet_id = "REPLACE: /subscriptions/.../subnets/private-endpoints"
+
+# Backup
+backup_retention_days        = 35   # Maximum retention for production
+geo_redundant_backup_enabled = true # Geo-redundant backup for DR
+
+# Key Vault
+keyvault_sku                        = "premium" # PBMM: Premium for HSM-backed keys
+keyvault_soft_delete_retention_days = 90        # PBMM: maximum retention
+keyvault_purge_protection_enabled   = true      # PBMM: purge protection required
+keyvault_public_network_access      = false     # PBMM: private access only
+keyvault_network_default_action     = "Deny"    # PBMM: deny by default
+# Per-generated-app Key Vaults (created at runtime by the backend) are reached
+# via private endpoints in PBMM, so public access stays disabled and no
+# SecurityControl=Ignore policy-exemption tag is applied.
+genapp_keyvault_public_network_access = "Disabled"
+
+# Storage
+storage_account_tier              = "Standard" # Standard for most workloads
+storage_replication_type          = "GRS"      # PBMM: Geo-redundant for DR
+storage_cors_max_age              = 3600
+storage_public_network_access     = false # PBMM: private access only
+storage_shared_access_key_enabled = false # PBMM: RBAC-only access
+
+# ── API Container App Environment Variables ──────────────────────────────────
+# Static env vars for the API container app. Infrastructure-derived values
+# (POSTGRES_HOST, ACR_LOGIN_SERVER, etc.) are computed automatically by Terraform.
+api_extra_env_vars = {
+  # Runtime mode for the API container.
+  NODE_ENV = "production"
+
+  # API listener port inside the container.
+  PORT = "8080"
+
+  # PostgreSQL connectivity settings that are NOT inferred from Terraform resources.
+  POSTGRES_PORT         = "5432"
+  POSTGRES_SSL          = "true"
+  POSTGRES_GENAPPS_PORT = "5432"
+  POSTGRES_GENAPPS_SSL  = "true"
+}
+
+# ── GitHub + Workflow Routing (Single Source) ───────────────────────────────
+# Organization where customer repositories are created and managed.
+github_org = "REPLACE: your GitHub org (e.g. contoso-gc)"
+
+# Owner of the platform repository that hosts genapp-deploy.yml.
+genapp_workflow_owner = "REPLACE: your GitHub org"
+
+# Repository that hosts genapp-deploy.yml.
+genapp_workflow_repository = "pronghorn"
+
+# Branch/ref used when dispatching genapp-deploy.yml. Set this to the branch
+# that deploys this environment (e.g. "dev", "uat", or "prod").
+genapp_workflow_ref = "prod"
+
+# Workflow file dispatched by the backend for generated app operations.
+genapp_workflow_file = "genapp-deploy.yml"
+
+# ── GitHub Integration ────────────────────────────────────────────
+# GitHub App identity (App ID, Installation ID, and private key) is managed in
+# the platform Key Vault, NOT in tfvars. Terraform dummy-seeds the secrets
+# github-app-id, github-app-installation-id, and github-app-private-key; an
+# operator sets the real values out-of-band:
+#   az keyvault secret set --vault-name <platform-kv> --name github-app-id --value <id>
+#   az keyvault secret set --vault-name <platform-kv> --name github-app-installation-id --value <id>
+#   az keyvault secret set --vault-name <platform-kv> --name github-app-private-key --file app.pem
+
+# ── Database Migrations ──────────────────────────────────────────────────────────
+# Apply SQL migrations (infra/migrations/*.sql) automatically when the API
+# container starts. Required on first deploy so the schema is created — without
+# it every table is missing and the app returns 500 "relation ... does not exist".
+# The runner is idempotent (tracked in schema_migrations); already-applied files
+# are skipped, and any failure rolls back that file and is surfaced via
+# /api/health/detailed. Set to false only if you apply migrations out-of-band.
+run_migrations_on_startup = true
+
+# ── Container Apps ────────────────────────────────────────────────────────────
+api_container_name       = "api"
+api_target_port          = 8080
+api_ingress_transport    = "auto"
+frontend_container_name  = "frontend"
+container_image          = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" # Placeholder — overridden after ACR build
+frontend_container_image = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" # Placeholder — overridden after ACR build
+container_cpu            = 2.0                                                           # Production: more CPU
+container_memory         = "4Gi"                                                         # Production: more memory
+container_min_replicas   = 2                                                             # Production: minimum 2 for HA
+container_max_replicas   = 10
+aca_environment_name     = "goa-cc-pronghorn-prod-cae-001"
+
+# VNet Injection — Container Apps Environment deployed inside this subnet
+container_apps_internal_only = true # PBMM: internal load balancer only
+
+# Workload Container Apps Environment (tenant-deployed containers)
+workload_aca_environment_name = "goa-cc-pronghorn-prod-workload-cae-001"
+workload_aca_internal_only    = true
+
+# Frontend
+frontend_container_cpu    = 0.5   # Production: more CPU than dev default (0.25)
+frontend_container_memory = "1Gi" # Production: more memory than dev default (0.5Gi)
+frontend_min_replicas     = 2     # Production: minimum 2 for HA
+frontend_max_replicas     = 10
+
+# ── API Management ───────────────────────────────────────────────────────────
+apim_sku                  = "Premium_1" # PBMM: Premium required for Internal VNet integration + multi-AZ + SLA
+apim_api_name             = "pronghorn-prod-api"
+apim_api_display_name     = "Pronghorn Prod API"
+apim_api_path             = "api"
+apim_openai_api_version   = "2025-04-01-preview"
+apim_publisher_name       = "Pronghorn"
+apim_publisher_email      = "REPLACE: admin@your-org.example"
+apim_virtual_network_type = "Internal" # PBMM: internal VNet integration
+# NOTE: Internal VNet integration requires the Premium SKU. Standard/Developer
+# cannot be deployed into a VNet in Internal mode for production use.
+
+# ── Container Registry ───────────────────────────────────────────────────────
+acr_name                  = "goaccprongblueprodacr" # REPLACE: globally-unique ACR name
+acr_sku                   = "Premium"               # PBMM: Premium required for PE, zone redundancy, trust policies
+acr_public_network_access = false                   # PBMM: private access only
+use_existing_acr          = false
+# Dedicated ACR agent pool runs image builds inside the VNet (private). In the
+# PBMM reference deployment, image builds run on the self-hosted runner via local
+# `docker build` + `docker push` over the ACR private endpoint, so the agent pool
+# is optional — set enable_acr_agent_pool = false if you do not use `az acr build`.
+enable_acr_agent_pool         = true
+acr_agent_pool_name           = "pronghorn-build-pool"
+acr_agent_pool_tier           = "S2" # Production: faster build agents
+acr_agent_pool_instance_count = 1
+
+# ── Platform Resource Group ──────────────────────────────────────────────────
+# Optional override for shared platform resources. Leave empty to reuse
+# resource_group_name.
+platform_resource_group_name = "goa-cc-pronghorn_prod-rg"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+app_insights_type            = "web"
+resource_group_wait_duration = "30s"
+log_analytics_sku            = "PerGB2018"
+log_retention_days           = 90 # Production: longer retention
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Two-pass: the API auto-adds the deployed frontend URL to CORS, so this can stay
+# as a placeholder for the first apply. Replace with your real domain(s) to
+# tighten/extend CORS explicitly (requires a redeploy).
+allowed_origins = ["https://pronghorn.example.com"] # REPLACE: your frontend domain(s)
+
+# ── Entra ID App Registration ────────────────────────────────────────────────
+# Option A: Terraform-managed (requires Graph API permissions on the deploying SP)
+# create_entra_app_registration = true
+
+# Option B: Manually-created (set the IDs from Azure Portal). Default for PBMM,
+# since the deploying SP typically lacks Graph permissions. After the first
+# deploy, register the frontend FQDN as a SPA redirect URI on this app (§9.5.1).
+create_entra_app_registration = false
+vite_auth_mode                = "msal"
+vite_use_azure_api            = true
+
+# ── Frontend Build-Time Environment Variables ────────────────────────────────
+frontend_build_vars = {
+  VITE_AUTH_MODE     = "msal"
+  VITE_USE_AZURE_API = "true"
+}
+
+# ── Public Custom Domain (optional) ───────────────────────────────────────────
+# If you front the frontend and API with public custom domains (public App
+# Gateway -> hub -> internal App Gateway -> Container App / APIM), set these so
+# the frontend build and Entra App Registration use the public hostnames instead
+# of the internal azurecontainerapps.io / azure-api.net FQDNs (which a public
+# browser cannot reach). The frontend makes direct browser calls to the API, so
+# api_base_url_override MUST be publicly reachable. Leave commented to use the
+# auto-generated internal URLs.
+# frontend_app_url_override = "REPLACE: https://app.<your-domain>"     # MSAL redirect URI + CORS + Entra redirect
+# api_base_url_override     = "REPLACE: https://api.<your-domain>"     # VITE_API_BASE_URL + derived VITE_WS_URL
+
+# ── Azure AI Foundry ──────────────────────────────────────────────────────────
+enable_ai_foundry                = true
+ai_foundry_location              = "canadaeast"
+ai_foundry_project_name          = "pronghorn-prod-pbmm"
+ai_foundry_project_description   = "Pronghorn AI prod project"
+ai_foundry_enable_agent_service  = true
+ai_foundry_sku                   = "S0"
+ai_foundry_public_network_access = false # PBMM: private access only
+ai_foundry_disable_local_auth    = true  # PBMM: Entra-only auth
+
+# AI Model Deployments
+ai_model_deployments = [
+  {
+    deployment_name        = "gpt-4o"
+    model_name             = "gpt-4o"
+    model_version          = "2024-11-20"
+    sku_name               = "GlobalStandard"
+    sku_capacity           = 30
+    version_upgrade_option = "OnceCurrentVersionExpired"
+  },
+  {
+    deployment_name        = "gpt-4o-mini"
+    model_name             = "gpt-4o-mini"
+    model_version          = "2024-07-18"
+    sku_name               = "GlobalStandard"
+    sku_capacity           = 100
+    version_upgrade_option = "OnceCurrentVersionExpired"
+  }
+]
+
+# ── Policy-Required Tags (Azure Landing Zone) ────────────────────────────────
+# REPLACE: with your organization's actual values
+client_organization = "REPLACE: your organization"
+cost_center         = "REPLACE: your cost center"
+data_sensitivity    = "Protected B"
+project_contact     = "REPLACE: admin@your-org.example"
+project_name_tag    = "Pronghorn"
+technical_contact   = "REPLACE: admin@your-org.example"
+
+# ── Tags ──────────────────────────────────────────────────────────────────────
+extra_tags = {
+  Team               = "Platform"
+  Deployment         = "prod"
+  SecurityProfile    = "PBMM"
+  DataClassification = "Protected B"
+}
